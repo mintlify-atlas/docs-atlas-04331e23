@@ -1,7 +1,7 @@
 ---
 title: "WildFly and JBoss EAP Application Server Configuration"
 sidebarTitle: "WildFly & JBoss"
-description: "WildFly (port 8090) and JBoss EAP (port 8070) run side-by-side for Jakarta EE deployments, migration testing, and gradual application cutover from legacy to modern Java EE."
+description: "WildFly (port 8090) and JBoss EAP (port 8070) run side-by-side for Jakarta EE deployment and migration testing, enabling a gradual cutover to WildFly."
 ---
 
 The stack runs both WildFly and JBoss EAP simultaneously in separate containers. WildFly is the modern Jakarta EE 9+ server; JBoss EAP (backed by an older WildFly 20 base image) provides legacy application support. Running both side-by-side is the core value proposition for teams migrating from JBoss to WildFly: you can deploy the same application to both servers, compare runtime behavior, and gradually cut over to WildFly without removing the JBoss safety net until you are confident.
@@ -16,6 +16,8 @@ The stack runs both WildFly and JBoss EAP simultaneously in separate containers.
 | Image | `quay.io/wildfly/wildfly:latest` | `jboss/wildfly:20.0.1.Final` |
 | Default Credentials | `admin` / `admin` | `admin` / `admin` |
 | Deployment Directory | `/opt/jboss/wildfly/standalone/deployments` | `/opt/jboss/wildfly/standalone/deployments` |
+| User Env Var | `WILDFLY_USER` | `JBOSS_USER` |
+| Pass Env Var | `WILDFLY_PASS` | `JBOSS_PASS` |
 
 Both servers start in standalone mode and bind to `0.0.0.0` for both HTTP and management interfaces:
 
@@ -143,6 +145,24 @@ docker exec wildfly cat /opt/jboss/wildfly/standalone/deployments/myapp.war.fail
 # Tail the WildFly server log
 docker logs wildfly --tail 100
 ```
+
+## Environment Variables
+
+The following environment variables are defined in `docker-compose.yml` for each server:
+
+```yaml
+wildfly:
+  environment:
+    - WILDFLY_USER=admin
+    - WILDFLY_PASS=admin
+
+jboss:
+  environment:
+    - JBOSS_USER=admin
+    - JBOSS_PASS=admin
+```
+
+`WILDFLY_USER`/`WILDFLY_PASS` and `JBOSS_USER`/`JBOSS_PASS` are available inside the respective containers and can be referenced in startup scripts or health-check commands. Change these values in `docker-compose.yml` (or a `docker-compose.override.yml`) before exposing the management consoles.
 
 ## JVM Memory Configuration
 

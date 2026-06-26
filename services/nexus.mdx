@@ -1,7 +1,7 @@
 ---
 title: "Nexus Repository Manager: Artifact Storage and Distribution"
 sidebarTitle: "Nexus"
-description: "Nexus Repository Manager runs on port 8081 and provides Maven release and snapshot repositories for storing build artifacts and versioned configuration properties."
+description: "Nexus Repository Manager runs on port 8081, providing Maven release and snapshot repositories where the Jenkins pipeline stores versioned build artifacts."
 ---
 
 Nexus Repository Manager is the artifact hub for the CI/CD stack. It stores all build outputs — WAR files, JARs, and versioned configuration property tarballs. The Jenkins pipeline deploys artifacts to the `maven-snapshots` repository at the end of a successful pipeline run, immediately after the SonarQube Quality Gate passes. Every deployed artifact is versioned with a build number and timestamp, giving you a complete history of every build stored in one place.

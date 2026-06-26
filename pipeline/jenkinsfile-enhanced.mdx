@@ -1,10 +1,10 @@
 ---
-title: "Jenkinsfile.enhanced: 13-Stage Parameterized Pipeline"
+title: "Jenkinsfile.enhanced: 15-Stage Parameterized Pipeline"
 sidebarTitle: "Enhanced Pipeline"
-description: "Jenkinsfile.enhanced adds environment selection, security scanning, per-environment Maven repos, WildFly/JBoss deployment, artifact versioning, and properties storage to the basic pipeline."
+description: "Jenkinsfile.enhanced adds environment selection, security scanning, WildFly/JBoss deployment, artifact versioning, and properties storage in 15 stages."
 ---
 
-`Jenkinsfile.enhanced` extends the basic 7-stage pipeline into a fully parameterized 13-stage workflow designed for multi-environment Java application delivery. It introduces pipeline parameters that operators set at build time, automatic versioning using a build-number/timestamp composite, grep-based security scanning for hardcoded secrets, per-environment Maven local repositories, deployment to either WildFly or JBoss via `docker cp`, `version.properties` injection into WAR files, versioned properties upload to Nexus, and a post-deployment HTTP verification step.
+`Jenkinsfile.enhanced` extends the basic 7-stage pipeline into a fully parameterized 15-stage workflow designed for multi-environment Java application delivery. It introduces pipeline parameters that operators set at build time, automatic versioning using a build-number/timestamp composite, grep-based security scanning for hardcoded secrets, per-environment Maven local repositories, deployment to either WildFly or JBoss via `docker cp`, `version.properties` injection into WAR files, versioned properties upload to Nexus, and a post-deployment HTTP verification step.
 
 ## Pipeline Parameters
 
@@ -28,7 +28,7 @@ description: "Jenkinsfile.enhanced adds environment selection, security scanning
   When `true`, the Checkout or Extract stage unpacks `source-code.zip` from the workspace instead of running `checkout scm`. Enables deployment of applications that are not hosted in a Git repository.
 </ParamField>
 
-## All 13 Stages
+## All 15 Stages
 
 <Accordion title="1. Initialize">
   Prints pipeline metadata and computes a composite application version string that is used throughout all subsequent stages.

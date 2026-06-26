@@ -1,7 +1,7 @@
 ---
 title: "SonarQube: Code Quality and Security Analysis Service"
 sidebarTitle: "SonarQube"
-description: "SonarQube runs on port 9000 with a PostgreSQL backend. It performs code quality analysis, security vulnerability detection, and enforces Quality Gates in the pipeline."
+description: "SonarQube runs on port 9000 backed by PostgreSQL, performing code quality and security analysis with Quality Gates that block failing pipeline builds."
 ---
 
 SonarQube provides automated code quality and security analysis across every build. The Jenkins pipeline submits analysis results to SonarQube after the build and test stages using `mvn sonar:sonar`, and a dedicated **Quality Gate** stage blocks deployment if the code fails the configured quality thresholds. This means a build with too many bugs, security vulnerabilities, or insufficient test coverage will never make it to Nexus or the application servers.
@@ -16,6 +16,8 @@ SonarQube provides automated code quality and security analysis across every bui
 | Default Credentials | `admin` / `admin` |
 | Database | PostgreSQL 13 (`postgres` container) |
 | Data Volume | `sonarqube_data` |
+| Extensions Volume | `sonarqube_extensions` |
+| Logs Volume | `sonarqube_logs` |
 
 ## Quality Gate Integration
 
@@ -86,6 +88,10 @@ sonarqube:
     - SONAR_JDBC_URL=jdbc:postgresql://postgres:5432/sonarqube
     - SONAR_JDBC_USERNAME=sonar
     - SONAR_JDBC_PASSWORD=sonar
+  volumes:
+    - sonarqube_data:/opt/sonarqube/data
+    - sonarqube_extensions:/opt/sonarqube/extensions
+    - sonarqube_logs:/opt/sonarqube/logs
 ```
 
 <Warning>

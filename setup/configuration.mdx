@@ -1,7 +1,7 @@
 ---
 title: "Configure Jenkins, SonarQube, Nexus, and App Servers"
 sidebarTitle: "Configuration"
-description: "Customize Jenkins plugins, credentials, Maven version, SonarQube database, Nexus repositories, WildFly/JBoss settings, and resource limits in Docker Compose."
+description: "Customize Jenkins plugins, credentials, Maven, SonarQube database, Nexus repos, and WildFly/JBoss settings via Groovy init scripts and Docker Compose."
 ---
 
 This page covers all post-installation configuration options available in the CI/CD stack. Most Jenkins settings are applied through Groovy init scripts that run automatically on container startup, while SonarQube, Nexus, and application server settings are driven by environment variables in `docker-compose.yml`. For production hardening — adding resource limits, health checks, and pinned image versions — see the [Docker Compose Override](/setup/docker-compose-override) guide.

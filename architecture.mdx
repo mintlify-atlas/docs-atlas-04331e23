@@ -1,5 +1,5 @@
 ---
-title: "CI/CD Stack Architecture and Service Topology"
+title: "Jenkins CI/CD Stack: Architecture and Service Topology"
 sidebarTitle: "Architecture"
 description: "How Jenkins, SonarQube, Nexus, WildFly, and JBoss are connected inside a private Docker bridge network with persistent volumes and health-checked startup."
 ---
@@ -40,9 +40,14 @@ The following diagram shows how the services are connected and how a Maven pipel
 └─────────────────────────────────────────────────────────┘
 
 Host Machine
-├── Port 8080  → Jenkins
-├── Port 9000  → SonarQube  
-└── Port 8081  → Nexus
+├── Port 8080  → Jenkins (HTTP)
+├── Port 50000 → Jenkins (agent)
+├── Port 9000  → SonarQube
+├── Port 8081  → Nexus
+├── Port 8090  → WildFly (HTTP)
+├── Port 9990  → WildFly (Admin)
+├── Port 8070  → JBoss (HTTP)
+└── Port 9970  → JBoss (Admin)
 ```
 
 ## Services

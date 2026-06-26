@@ -1,7 +1,7 @@
 ---
-title: "Contributing to the Jenkins CI/CD Environment"
+title: "Contributing to the Jenkins CI/CD Environment Project"
 sidebarTitle: "Contributing"
-description: "Contribution guidelines for the CI/CD environment: issue reporting, pull requests, adding services or Jenkins plugins, code style standards, and testing requirements."
+description: "Contribution guidelines covering issue reporting, pull requests, adding services or Jenkins plugins, code style standards, and testing requirements."
 ---
 
 Contributions to the CI/CD environment are welcome — whether you're fixing a bug, adding a new service, improving documentation, or enhancing the Jenkins pipeline configuration. This guide explains how to report issues, set up a development environment, follow the project's code style, and submit a pull request.
@@ -215,7 +215,7 @@ Test on a clean environment to catch any dependency on pre-existing state:
 ```bash
 # Full reset
 docker compose down -v
-rm -rf examples/target/
+rm -rf jenkins/ examples/target/
 
 # Fresh setup
 ./setup.sh

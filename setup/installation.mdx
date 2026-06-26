@@ -79,7 +79,7 @@ Before running the setup script, confirm your environment meets the following re
     |---|---|
     | Container status | Jenkins, SonarQube, Nexus, PostgreSQL containers are running |
     | Network connectivity | Jenkins container can reach SonarQube and Nexus by hostname |
-    | HTTP endpoints | All services respond to `curl` on their published ports |
+    | HTTP endpoints | Jenkins (`:8080`), SonarQube (`:9000`), and Nexus (`:8081`) respond to `curl` |
     | Service health | Jenkins version, PostgreSQL connection, SonarQube API status (`UP`) |
     | Docker volumes | `cicd_jenkins_home`, `cicd_nexus_data`, `cicd_sonarqube_data` exist |
     | Configuration files | `jenkins/init.groovy.d/` scripts, `docker-compose.yml`, `build-config.yml`, `Jenkinsfile` are present and valid |

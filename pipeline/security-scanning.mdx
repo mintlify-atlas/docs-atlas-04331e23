@@ -1,7 +1,7 @@
 ---
-title: "Automated Security Scanning in CI/CD Pipelines"
+title: "Security Scanning: Detecting Hardcoded Secrets in Code"
 sidebarTitle: "Security Scanning"
-description: "The CI/CD pipeline automatically scans source code for hardcoded passwords, API keys, and tokens. Builds fail immediately when secrets are detected in source files."
+description: "The enhanced pipeline scans src/ for hardcoded passwords, API keys, and tokens using grep. The build fails immediately if any secrets are detected."
 ---
 
 Jenkins CI/CD Environment includes automated security scanning that detects hardcoded credentials before code is deployed. The **Security Scan - Password Detection** stage in `Jenkinsfile.enhanced` runs grep-based pattern matching against all source files under the `src/` directory and fails the build immediately if any matches are found — preventing secrets from ever reaching a deployed artifact.
@@ -12,9 +12,9 @@ The scan stage runs three independent grep passes against `src/`, each targeting
 
 | Pattern | What it catches |
 |---------|-----------------|
-| `grep -r -i "password.*=.*['\"]"` | Hardcoded passwords in any assignment where the right-hand side begins with a quote character |
-| `grep -r -i "api[_-]key.*=.*['\"]"` | Hardcoded API keys following the `api_key` or `api-key` naming convention |
-| `grep -r -i "token.*=.*['\"]"` | Hardcoded tokens such as bearer tokens, personal access tokens, or session tokens |
+| `grep -r -n -i "password.*=.*['\"]"` | Hardcoded passwords in any assignment where the right-hand side begins with a quote character |
+| `grep -r -n -i "api[_-]key.*=.*['\"]"` | Hardcoded API keys following the `api_key` or `api-key` naming convention |
+| `grep -r -n -i "token.*=.*['\"]"` | Hardcoded tokens such as bearer tokens, personal access tokens, or session tokens |
 
 After the reporting pass, a stricter version of the password pattern — `password.*=.*['\"][^$]` — is used to decide whether to abort the pipeline. The `[^$]` suffix excludes values that begin with `$`, which are environment variable references and are safe.
 
@@ -31,7 +31,7 @@ String token = "ghp_xyz123abc";
 
 The build log will contain:
 
-```
+```text
 ERROR: Hardcoded passwords detected in source code!
 Please use environment variables or secure credential storage.
 ```

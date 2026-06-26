@@ -1,7 +1,7 @@
 ---
-title: "Back Up and Restore the CI/CD Environment"
+title: "Automated Backup and Restore for the CI/CD Environment"
 sidebarTitle: "Backup & Restore"
-description: "backup-restore.sh creates timestamped archives of all service configurations, Jenkins jobs, Nexus config, SonarQube database, WildFly/JBoss configuration, and build files."
+description: "backup-restore.sh creates timestamped archives of environment configs, Jenkins jobs, Nexus, SonarQube database, WildFly/JBoss configs, and build files."
 ---
 
 `backup-restore.sh` provides three operations — `backup`, `restore`, and `list` — to protect all service configurations, pipeline definitions, and databases across the full stack. Run it before upgrades, major configuration changes, migrations, or any destructive operation to ensure you have a clean recovery point.
@@ -155,7 +155,7 @@ The restore process works component-by-component, skipping any component whose b
 - **Build configuration** — `build-config.yml` is copied back to the project root
 - **WildFly configuration** — the `wildfly-config.tar.gz` archive is copied into the running container via `docker cp`, then extracted with `tar xzf` and the container is restarted with `docker restart wildfly`
 - **JBoss configuration** — same process as WildFly using the `jboss-config.tar.gz` archive and `docker restart jboss`
-- **Jenkins jobs and credentials** — `jenkins-jobs.tar.gz` and `jenkins-credentials.tar.gz` are copied into the Jenkins container, extracted with `tar xzf`, and the container is restarted with `docker restart jenkins`
+- **Jenkins jobs** — `jenkins-jobs.tar.gz` is copied into the Jenkins container, extracted with `tar xzf`, and the container is restarted with `docker restart jenkins`
 - **SonarQube database** — `sonarqube.sql` is fed into PostgreSQL via `psql -U sonar sonarqube`, and the SonarQube container is restarted with `docker restart sonarqube`
 
 <Warning>

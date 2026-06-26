@@ -1,7 +1,7 @@
 ---
 title: "Harden the Stack with docker-compose.override.yml"
 sidebarTitle: "Compose Override"
-description: "Use docker-compose.override.yml to pin image versions, increase JVM heap sizes, add CPU/memory limits, configure health checks, and tune PostgreSQL for production."
+description: "Use docker-compose.override.yml to pin image versions, tune JVM heap, add CPU/memory limits, configure health checks, and tune PostgreSQL for production."
 ---
 
 Docker Compose automatically detects and deep-merges `docker-compose.override.yml` with the base `docker-compose.yml` at startup — no flags required. This mechanism lets you layer production-specific settings on top of the base configuration without touching the base file, making it easy to keep upstream changes without merge conflicts. The repository ships a fully annotated template at `docker-compose.override.yml.example` that covers every hardening option described on this page.

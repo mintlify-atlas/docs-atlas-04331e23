@@ -1,7 +1,7 @@
 ---
 title: "Environment Variables Reference for the CI/CD Stack"
 sidebarTitle: "Environment Variables"
-description: "Complete reference for all environment variables used by Jenkins, SonarQube, Nexus, WildFly, and JBoss containers, plus pipeline and application-level variables."
+description: "Complete reference for all environment variables used by Jenkins, SonarQube, Nexus, WildFly, and JBoss containers, plus pipeline and credentials variables."
 ---
 
 The CI/CD stack uses a layered environment variable strategy. Container-level variables — JVM options, database connection strings, and admin credentials — are declared in `docker-compose.yml` and applied at container startup. Pipeline-level variables are set in the `environment {}` block of the `Jenkinsfile` and are available to every stage. Application secrets such as database passwords and API keys must never be hardcoded in either location; instead they are stored as Jenkins Credentials and injected at runtime via `withCredentials()`. This page is the complete reference for all variables across every layer.
@@ -27,8 +27,13 @@ These variables are set in the `sonarqube` service's `environment` block in `doc
 | `SONAR_JDBC_URL` | `jdbc:postgresql://postgres:5432/sonarqube` | Full JDBC connection string pointing at the internal PostgreSQL service. The hostname `postgres` resolves within the `cicd-network` Docker bridge. |
 | `SONAR_JDBC_USERNAME` | `sonar` | Database user that SonarQube uses to connect to PostgreSQL. Must match `POSTGRES_USER`. |
 | `SONAR_JDBC_PASSWORD` | `sonar` | Password for the SonarQube database user. Must match `POSTGRES_PASSWORD`. |
-| `SONAR_CE_JAVAOPTS` | *(not set by default)* | JVM options for the SonarQube Compute Engine background process. Example: `-Xmx2048m -Xms1024m`. |
-| `SONAR_WEB_JAVAOPTS` | *(not set by default)* | JVM options for the SonarQube web server process. Example: `-Xmx2048m -Xms1024m`. |
+
+The following variables are **not set in the base `docker-compose.yml`** but can be added via `docker-compose.override.yml` to tune JVM memory for production workloads:
+
+| Variable | Example Value | Description |
+|---|---|---|
+| `SONAR_CE_JAVAOPTS` | `-Xmx2048m -Xms1024m` | JVM options for the SonarQube Compute Engine background process. |
+| `SONAR_WEB_JAVAOPTS` | `-Xmx2048m -Xms1024m` | JVM options for the SonarQube web server process. |
 
 ---
 
@@ -50,7 +55,6 @@ These variables are set in the `wildfly` and `jboss` service blocks respectively
 |---|---|---|
 | `WILDFLY_USER` / `JBOSS_USER` | `admin` | Management console username created by `add-user.sh` during setup. |
 | `WILDFLY_PASS` / `JBOSS_PASS` | `admin` | Management console password created by `add-user.sh` during setup. |
-| `JAVA_OPTS` | *(not set by default)* | Optional JVM tuning for the application server. For example: `-Xms2048m -Xmx4096m`. Set this when deploying large Jakarta EE applications that require more heap. |
 
 ---
 

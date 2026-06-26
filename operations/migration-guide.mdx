@@ -1,7 +1,7 @@
 ---
 title: "Migrate Java Applications from JBoss EAP to WildFly"
 sidebarTitle: "Migration Guide"
-description: "Migrate Java EE apps to Jakarta EE on WildFly using the CI/CD stack's side-by-side deployment: update dependencies, replace javax imports, run parallel testing, then cut over."
+description: "Migrate Java EE apps to Jakarta EE on WildFly: update pom.xml dependencies, replace javax imports, run parallel JBoss and WildFly instances, then cut over."
 ---
 
 The CI/CD stack runs WildFly and JBoss EAP side-by-side specifically to support migration. You can deploy the same application to both servers simultaneously for parallel testing and gradual traffic cutover — with no downtime. JBoss continues serving production traffic on port 8070 while you validate the migrated application on WildFly at port 8090, giving you a safe fallback at every stage.
@@ -112,7 +112,7 @@ For large codebases, automate the replacement with `sed`:
 ```bash
 find src -name "*.java" -type f -exec sed -i 's/javax\.servlet/jakarta.servlet/g' {} +
 find src -name "*.java" -type f -exec sed -i 's/javax\.persistence/jakarta.persistence/g' {} +
-find src -name "*.java" -type f -exec sed -i 's/javax\.\ejb/jakarta.ejb/g' {} +
+find src -name "*.java" -type f -exec sed -i 's/javax\.ejb/jakarta.ejb/g' {} +
 ```
 
 Run these commands from the project root and then compile immediately to surface any missed references.

@@ -1,7 +1,7 @@
 ---
-title: "Configure Builds with build-config.yml"
+title: "build-config.yml: Central Pipeline Configuration Reference"
 sidebarTitle: "Build Config"
-description: "build-config.yml controls Java version, Maven version, build tool, test settings, SonarQube, Nexus, app server targets, security scanning, and versioning for every pipeline run."
+description: "build-config.yml is read by every pipeline run to control Java, Maven, build tool, SonarQube, Nexus, app server, security, and versioning behavior."
 ---
 
 `build-config.yml` is the central configuration file read by Jenkins at the start of every pipeline run. It lives in the project root alongside the `Jenkinsfile` and controls all major pipeline behaviors — from which Java and Maven versions to use, to which application server receives deployments and whether security scanning is enabled. Changing a value here takes effect on the next pipeline execution without modifying any Groovy code.
@@ -131,6 +131,7 @@ maven:
 | `sonarqube.enabled` | boolean | Enables or disables the SonarQube Analysis and Quality Gate stages |
 | `sonarqube.host_url` | string | Base URL of the SonarQube server, e.g. `http://sonarqube:9000` |
 | `sonarqube.project_key` | string | SonarQube project key; defaults to `${env.JOB_NAME}` |
+| `sonarqube.project_name` | string | Human-readable project name shown in the SonarQube UI; defaults to `${env.JOB_NAME}` |
 | `sonarqube.security_scan` | boolean | Enables SonarQube's built-in security vulnerability rule set |
 
 ### Nexus Configuration

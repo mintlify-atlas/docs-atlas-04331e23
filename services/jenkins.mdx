@@ -1,7 +1,7 @@
 ---
 title: "Jenkins: CI/CD Orchestration Service Configuration"
 sidebarTitle: "Jenkins"
-description: "Jenkins runs on port 8080 and is auto-configured with plugins, Maven 3.9.2, SonarQube integration, and Nexus credentials via init.groovy.d scripts on first boot."
+description: "Jenkins runs on port 8080, auto-configured on first boot via init.groovy.d scripts with plugins, Maven 3.9.2, SonarQube server, and Nexus credentials."
 ---
 
 Jenkins is the CI/CD orchestration engine at the heart of this stack. It auto-configures on first boot using Groovy scripts placed in `jenkins/init.groovy.d/` — no setup wizard, no manual plugin installation, and no credential entry required. By the time Jenkins is accessible on port 8080, the admin user, essential plugins, Maven tool, SonarQube server connection, and Nexus credentials are all ready to use.
@@ -158,7 +158,7 @@ Find plugin short names in the Jenkins Plugin Index at `https://plugins.jenkins.
 
 ### Adding JDK Installations
 
-Create a new file `jenkins/init.groovy.d/06-configure-jdk.groovy` (or `07-` if `06-` is taken) to register a JDK as a managed tool:
+Create a new file `jenkins/init.groovy.d/07-configure-jdk.groovy` to register a JDK as a managed tool (note: `06-` is already used by `06-configure-appserver-credentials.groovy`):
 
 ```groovy
 import jenkins.model.Jenkins

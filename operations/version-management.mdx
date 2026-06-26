@@ -1,7 +1,7 @@
 ---
 title: "Build Versioning and Artifact Tracking in the Pipeline"
 sidebarTitle: "Version Management"
-description: "Every pipeline build gets a unique version in BUILD_NUMBER-TIMESTAMP format. Version metadata is embedded in WAR files and versioned configuration archives are stored in Nexus."
+description: "Every pipeline build gets a unique BUILD_NUMBER-TIMESTAMP version embedded in the WAR artifact and stored as a versioned configuration archive in Nexus."
 ---
 
 The CI/CD environment automatically generates a unique version identifier for every build and embeds it into both the WAR artifact and a companion configuration archive stored in Nexus. This means every deployed artifact is fully traceable — you can identify exactly which build produced a running application, which Git commit it came from, and which environment properties were active at deployment time.
@@ -39,7 +39,7 @@ The file contains a complete snapshot of the build context at the moment of depl
 
 ```properties
 VERSION=42-20251025-143022
-ENVIRONMENT=production
+ENVIRONMENT=prod
 BUILD_NUMBER=42
 BUILD_DATE=2025-10-25T14:30:22Z
 GIT_COMMIT=abc123def
@@ -89,7 +89,7 @@ Each properties archive also includes a `metadata.json` file generated at build 
 ```json
 {
   "version": "42-20251025-143022",
-  "environment": "production",
+  "environment": "prod",
   "buildNumber": "42",
   "timestamp": "2025-10-25T14:30:22Z",
   "gitCommit": "abc123def",

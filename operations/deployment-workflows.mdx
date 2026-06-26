@@ -1,7 +1,7 @@
 ---
 title: "Deployment Workflows: Git, ZIP, Manual, and Parameterized"
 sidebarTitle: "Deployment Workflows"
-description: "Four deployment workflows for Java apps: standard Git-based pipelines, ZIP source upload, manual docker cp deploys, and parameterized Jenkins jobs with environment selection."
+description: "Four deployment workflows: Git-based CI/CD, ZIP source upload, manual docker cp, and a parameterized Jenkins pipeline with environment selection."
 ---
 
 The CI/CD stack supports four deployment workflows suited to different team setups and project requirements. Choose Git-based for standard CI/CD automation, ZIP-based for applications without direct Git access, manual for rapid local testing, or parameterized for environment-specific deployments that give you full control over where and how your application is deployed.
@@ -83,13 +83,15 @@ Use the ZIP-based workflow for applications that live outside of Git — legacy 
     Once invoked, `upload-source.sh` performs the following steps in order:
 
     1. **Validates arguments** — checks that the ZIP file exists and that the environment and target server values are valid
-    2. **Extracts the ZIP** — unpacks to a temp directory via `unzip`
+    2. **Extracts the ZIP** — creates a temp directory via `mktemp -d` and unpacks the archive into it via `unzip`
     3. **Locates `pom.xml`** — searches for the project root using `find`
     4. **Loads environment properties** — reads `config/environments/<env>/application.properties` and exports values as environment variables
-    5. **Scans for hardcoded passwords** — greps `src/` for literal password assignments; exits with an error if any are found
-    6. **Builds with Maven** — runs `mvn clean install` with the environment flag and a generated build version
-    7. **Runs tests** — executes `mvn test`; stops if tests fail
-    8. **Deploys the WAR** — copies the built WAR file to the running container via `docker cp`
+    5. **Creates a local Maven repository** — creates `.m2/repository-<env>` inside the project directory for environment-isolated dependency caching
+    6. **Scans for hardcoded passwords** — greps `src/` for literal password assignments; exits with an error if any are found
+    7. **Builds with Maven** — runs `mvn clean install` with the environment flag and a generated build version
+    8. **Runs tests** — executes `mvn test`; stops if tests fail
+    9. **Deploys the WAR** — copies the built WAR file to the running container via `docker cp`
+    10. **Cleans up** — removes the temp directory created in step 2
   </Step>
 </Steps>
 
