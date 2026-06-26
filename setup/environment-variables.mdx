@@ -1,0 +1,144 @@
+---
+title: "Environment Variables Reference for the CI/CD Stack"
+sidebarTitle: "Environment Variables"
+description: "Complete reference for all environment variables used by Jenkins, SonarQube, Nexus, WildFly, and JBoss containers, plus pipeline and application-level variables."
+---
+
+The CI/CD stack uses a layered environment variable strategy. Container-level variables — JVM options, database connection strings, and admin credentials — are declared in `docker-compose.yml` and applied at container startup. Pipeline-level variables are set in the `environment {}` block of the `Jenkinsfile` and are available to every stage. Application secrets such as database passwords and API keys must never be hardcoded in either location; instead they are stored as Jenkins Credentials and injected at runtime via `withCredentials()`. This page is the complete reference for all variables across every layer.
+
+---
+
+## Jenkins Container Variables
+
+These variables are set in the `jenkins` service's `environment` block in `docker-compose.yml`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `JAVA_OPTS` | `-Djenkins.install.runSetupWizard=false` | JVM options passed to the Jenkins process. The default disables the first-run setup wizard so that Groovy init scripts handle all configuration automatically. Append heap flags (e.g. `-Xmx4096m -Xms2048m`) here for memory tuning. |
+
+---
+
+## SonarQube Container Variables
+
+These variables are set in the `sonarqube` service's `environment` block in `docker-compose.yml`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `SONAR_JDBC_URL` | `jdbc:postgresql://postgres:5432/sonarqube` | Full JDBC connection string pointing at the internal PostgreSQL service. The hostname `postgres` resolves within the `cicd-network` Docker bridge. |
+| `SONAR_JDBC_USERNAME` | `sonar` | Database user that SonarQube uses to connect to PostgreSQL. Must match `POSTGRES_USER`. |
+| `SONAR_JDBC_PASSWORD` | `sonar` | Password for the SonarQube database user. Must match `POSTGRES_PASSWORD`. |
+| `SONAR_CE_JAVAOPTS` | *(not set by default)* | JVM options for the SonarQube Compute Engine background process. Example: `-Xmx2048m -Xms1024m`. |
+| `SONAR_WEB_JAVAOPTS` | *(not set by default)* | JVM options for the SonarQube web server process. Example: `-Xmx2048m -Xms1024m`. |
+
+---
+
+## Nexus Container Variables
+
+These variables are set in the `nexus` service's `environment` block in `docker-compose.yml`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `INSTALL4J_ADD_VM_PARAMS` | `-Xms512m -Xmx512m -XX:MaxDirectMemorySize=273m` | JVM heap and direct memory settings for the Nexus process. The defaults are conservative; increase for repositories serving large binary artifacts or high concurrent load. |
+
+---
+
+## WildFly and JBoss Container Variables
+
+These variables are set in the `wildfly` and `jboss` service blocks respectively.
+
+| Variable | Default (WildFly / JBoss) | Description |
+|---|---|---|
+| `WILDFLY_USER` / `JBOSS_USER` | `admin` | Management console username created by `add-user.sh` during setup. |
+| `WILDFLY_PASS` / `JBOSS_PASS` | `admin` | Management console password created by `add-user.sh` during setup. |
+| `JAVA_OPTS` | *(not set by default)* | Optional JVM tuning for the application server. For example: `-Xms2048m -Xmx4096m`. Set this when deploying large Jakarta EE applications that require more heap. |
+
+---
+
+## PostgreSQL Container Variables
+
+These variables are set in the `postgres` service's `environment` block. PostgreSQL is an internal service and is not exposed outside the Docker network.
+
+| Variable | Default | Description |
+|---|---|---|
+| `POSTGRES_USER` | `sonar` | Database superuser created on first container start. Must match `SONAR_JDBC_USERNAME` in the SonarQube service. |
+| `POSTGRES_PASSWORD` | `sonar` | Password for `POSTGRES_USER`. Must match `SONAR_JDBC_PASSWORD` in the SonarQube service. |
+| `POSTGRES_DB` | `sonarqube` | Name of the database created on first start. Referenced in `SONAR_JDBC_URL`. |
+
+---
+
+## Jenkins Pipeline Variables
+
+Pipeline-level variables are declared in the `environment {}` block of the `Jenkinsfile` and are available as environment variables within every `stage`. The following variables are used by the included pipeline:
+
+| Variable | Example Value | Description |
+|---|---|---|
+| `NEXUS_URL` | `http://nexus:8081` | Base URL of the Nexus service, resolved by the internal Docker network hostname. |
+| `SONARQUBE_URL` | `http://sonarqube:9000` | Base URL of the SonarQube service used by the `sonar:sonar` Maven goal. |
+| `BUILD_CONFIG` | `build-config.yml` | Path to the YAML file loaded by the pipeline's **Read Build Config** stage. |
+| `WILDFLY_URL` | `http://wildfly:9990` | WildFly management API endpoint used for deployment steps. |
+| `JBOSS_URL` | `http://jboss:9990` | JBoss management API endpoint used for deployment steps. |
+| `APP_VERSION` | *(set dynamically)* | Set at runtime by the pipeline using the format `${BUILD_NUMBER}-${TIMESTAMP}` as defined in `build-config.yml`. Embedded in artifact filenames and stored with versioned properties in Nexus. |
+
+---
+
+## Application-Level Secret Variables
+
+Sensitive values such as database passwords, API keys, and deployment credentials must be stored as **Jenkins Credentials** and never hardcoded in source files or committed to Git. Jenkins provides the `withCredentials()` step to inject credential values as temporary environment variables scoped to a single block.
+
+Store Nexus credentials under the ID `nexus-credentials` (type: **Username with password**) in Jenkins at **Manage Jenkins → Credentials**. Reference them in a pipeline stage like this:
+
+```groovy
+withCredentials([usernamePassword(credentialsId: 'nexus-credentials',
+                                  usernameVariable: 'NEXUS_USER',
+                                  passwordVariable: 'NEXUS_PASS')]) {
+    sh "mvn deploy -DaltDeploymentRepository=nexus::default::${NEXUS_URL}/repository/maven-snapshots"
+}
+```
+
+The values bound to `NEXUS_USER` and `NEXUS_PASS` are automatically masked in Jenkins console output and log files. They are never written to disk or exposed in the pipeline definition.
+
+<Warning>
+  Never commit passwords, tokens, or API keys to Git — even in `.env` files or
+  commented-out code. Jenkins Credentials (backed by the encrypted credentials
+  store) and the `withCredentials()` step are the only approved patterns for
+  secret injection. The `build-config.yml` `security.enforce_env_vars` flag is
+  set to `true` by default to reinforce this policy.
+</Warning>
+
+---
+
+## Using a `.env` File
+
+Docker Compose automatically reads a `.env` file in the same directory as `docker-compose.yml` and substitutes variable references in the Compose file. This is useful for overriding default port bindings or image version tags without editing the base file directly.
+
+Create a `.env` file in the project root:
+
+```properties
+# Image versions
+JENKINS_VERSION=lts
+SONARQUBE_VERSION=community
+NEXUS_VERSION=latest
+POSTGRES_VERSION=13
+
+# Port overrides
+JENKINS_PORT=8080
+SONARQUBE_PORT=9000
+NEXUS_PORT=8081
+```
+
+Reference the variables in `docker-compose.yml` using `${VAR:-default}` syntax:
+
+```yaml
+services:
+  jenkins:
+    image: jenkins/jenkins:${JENKINS_VERSION:-lts}
+    ports:
+      - "${JENKINS_PORT:-8080}:8080"
+```
+
+<Note>
+  The `.env` file should be listed in `.gitignore` when it contains any
+  environment-specific overrides. Use `docker-compose.override.yml` for
+  structural changes (resource limits, health checks, volume bind mounts) and
+  `.env` for simple scalar overrides like ports and version tags.
+</Note>

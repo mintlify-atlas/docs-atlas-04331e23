@@ -1,0 +1,296 @@
+---
+title: "WildFly and JBoss EAP Application Server Configuration"
+sidebarTitle: "WildFly & JBoss"
+description: "WildFly (port 8090) and JBoss EAP (port 8070) run side-by-side for Jakarta EE deployments, migration testing, and gradual application cutover from legacy to modern Java EE."
+---
+
+The stack runs both WildFly and JBoss EAP simultaneously in separate containers. WildFly is the modern Jakarta EE 9+ server; JBoss EAP (backed by an older WildFly 20 base image) provides legacy application support. Running both side-by-side is the core value proposition for teams migrating from JBoss to WildFly: you can deploy the same application to both servers, compare runtime behavior, and gradually cut over to WildFly without removing the JBoss safety net until you are confident.
+
+## Quick Reference
+
+| Property | WildFly | JBoss EAP |
+|---|---|---|
+| HTTP Port | `8090` | `8070` |
+| Admin Port | `9990` | `9970` |
+| Container Name | `wildfly` | `jboss` |
+| Image | `quay.io/wildfly/wildfly:latest` | `jboss/wildfly:20.0.1.Final` |
+| Default Credentials | `admin` / `admin` | `admin` / `admin` |
+| Deployment Directory | `/opt/jboss/wildfly/standalone/deployments` | `/opt/jboss/wildfly/standalone/deployments` |
+
+Both servers start in standalone mode and bind to `0.0.0.0` for both HTTP and management interfaces:
+
+```yaml
+command: ["/opt/jboss/wildfly/bin/standalone.sh", "-b", "0.0.0.0", "-bmanagement", "0.0.0.0"]
+```
+
+## Configuring Admin Users
+
+`setup.sh` runs `add-user.sh` inside both containers immediately after they start, creating the `admin` management user silently:
+
+```bash
+# WildFly admin user
+docker exec wildfly /opt/jboss/wildfly/bin/add-user.sh admin admin --silent
+
+# JBoss admin user
+docker exec jboss /opt/jboss/wildfly/bin/add-user.sh admin admin --silent
+```
+
+If the user already exists from a previous run, `add-user.sh` will print a warning but exit cleanly — this is expected behavior and does not affect operation.
+
+<Warning>
+Change the default `admin`/`admin` credentials before exposing the management ports (`9990`, `9970`) outside the Docker network. The management interfaces provide full server control including deployment, configuration changes, and JVM operations.
+</Warning>
+
+## Deploying Applications
+
+<Tabs>
+  <Tab title="Manual (docker cp)">
+Copy a WAR file directly into the deployments directory. WildFly and JBoss both use file-system deployment scanning — dropping a file into the deployments directory triggers automatic deployment within seconds.
+
+```bash
+# Deploy to WildFly
+docker cp target/myapp.war wildfly:/opt/jboss/wildfly/standalone/deployments/
+
+# Deploy to JBoss
+docker cp target/myapp.war jboss:/opt/jboss/wildfly/standalone/deployments/
+```
+
+The server writes a marker file (`.deployed`, `.failed`, or `.isdeploying`) alongside the WAR to signal deployment status. Check for these markers after copying to confirm success.
+  </Tab>
+  <Tab title="Maven Plugin">
+Use the `wildfly-maven-plugin` to deploy directly from your Maven build. Add the plugin to your `pom.xml` and configure the target server:
+
+```xml
+<plugin>
+    <groupId>org.wildfly.plugins</groupId>
+    <artifactId>wildfly-maven-plugin</artifactId>
+    <version>4.2.0.Final</version>
+    <configuration>
+        <hostname>localhost</hostname>
+        <port>9990</port>
+        <username>admin</username>
+        <password>admin</password>
+    </configuration>
+</plugin>
+```
+
+Then deploy with:
+
+```bash
+# Deploy to WildFly (port 9990)
+mvn wildfly:deploy
+
+# Deploy to JBoss (port 9970) — override the port
+mvn wildfly:deploy -Dwildfly.port=9970
+```
+  </Tab>
+  <Tab title="Pipeline (Jenkinsfile.enhanced)">
+The enhanced Jenkinsfile uses `docker cp` in the **Deploy to Application Server** stage. The target server (`wildfly` or `jboss`) is selected at runtime via the `TARGET_SERVER` pipeline parameter:
+
+```groovy
+stage('Deploy to Application Server') {
+    steps {
+        script {
+            withCredentials([usernamePassword(
+                credentialsId: "${params.TARGET_SERVER}-credentials",
+                usernameVariable: 'SERVER_USER',
+                passwordVariable: 'SERVER_PASS'
+            )]) {
+                sh """
+                    WAR_FILE=\$(find target -name "*.war" | head -1)
+
+                    if [ -z "\$WAR_FILE" ]; then
+                        echo "ERROR: No WAR file found in target directory"
+                        exit 1
+                    fi
+
+                    echo "Deploying \$WAR_FILE to ${params.TARGET_SERVER}"
+                    docker cp \$WAR_FILE ${params.TARGET_SERVER}:/opt/jboss/wildfly/standalone/deployments/
+                    echo "Deployment completed to ${params.TARGET_SERVER}"
+                """
+            }
+        }
+    }
+}
+```
+
+The credentials (`wildfly-credentials` or `jboss-credentials`) are pre-configured by `06-configure-appserver-credentials.groovy` on Jenkins first boot.
+  </Tab>
+</Tabs>
+
+## Checking Deployment Status
+
+After a WAR is placed in the deployments directory, WildFly and JBoss write marker files to indicate the deployment lifecycle stage:
+
+```bash
+# List all files in the deployments directory
+docker exec wildfly ls -la /opt/jboss/wildfly/standalone/deployments/
+```
+
+| Marker File | Meaning |
+|---|---|
+| `myapp.war.isdeploying` | Deployment in progress |
+| `myapp.war.deployed` | Successfully deployed and running |
+| `myapp.war.failed` | Deployment failed — inspect server logs |
+| `myapp.war.undeployed` | Application was undeployed |
+
+If you see a `.failed` marker, inspect its contents for the error message and check the full server log:
+
+```bash
+# Read the failure message
+docker exec wildfly cat /opt/jboss/wildfly/standalone/deployments/myapp.war.failed
+
+# Tail the WildFly server log
+docker logs wildfly --tail 100
+```
+
+## JVM Memory Configuration
+
+Both servers inherit `JAVA_OPTS` from the container environment. The default `docker-compose.yml` does not set `JAVA_OPTS` explicitly, which means the JVM uses its default heap sizing (typically 25% of container memory for `-Xms`, 50% for `-Xmx`).
+
+For fine-grained control, set `JAVA_OPTS` in `docker-compose.yml` or in your override file:
+
+```yaml
+wildfly:
+  environment:
+    - JAVA_OPTS=-Xms512m -Xmx1024m -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=256m
+
+jboss:
+  environment:
+    - JAVA_OPTS=-Xms512m -Xmx1024m -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=256m
+```
+
+For production workloads with large EE applications, allocate significantly more heap:
+
+```yaml
+wildfly:
+  environment:
+    - JAVA_OPTS=-Xms2048m -Xmx4096m -XX:MetaspaceSize=256m -XX:MaxMetaspaceSize=512m
+```
+
+## build-config.yml App Server Settings
+
+The `build-config.yml` file exposes an `appserver` section that both the standard Jenkinsfile and the enhanced pipeline read to determine default deployment targets and server URLs:
+
+```yaml
+appserver:
+  type: wildfly  # Options: wildfly, jboss
+  wildfly:
+    url: http://wildfly:9990
+    deployment_dir: /opt/jboss/wildfly/standalone/deployments
+    admin_port: 9990
+    http_port: 8090
+  jboss:
+    url: http://jboss:9990
+    deployment_dir: /opt/jboss/wildfly/standalone/deployments
+    admin_port: 9970
+    http_port: 8070
+```
+
+Set `type` to `wildfly` or `jboss` to establish the default target when the pipeline is not run with explicit parameters.
+
+## Volumes
+
+Each server has three dedicated Docker volumes that persist data across container restarts:
+
+| Volume | Mount Path | Purpose |
+|---|---|---|
+| `wildfly_deployments` | `/opt/jboss/wildfly/standalone/deployments` | Deployed WAR/EAR files and marker files |
+| `wildfly_data` | `/opt/jboss/wildfly/standalone/data` | Runtime persistent data (Infinispan caches, etc.) |
+| `wildfly_config` | `/opt/jboss/wildfly/standalone/configuration` | `standalone.xml` and configuration files |
+| `jboss_deployments` | `/opt/jboss/wildfly/standalone/deployments` | Same structure for the JBoss container |
+| `jboss_data` | `/opt/jboss/wildfly/standalone/data` | JBoss runtime data |
+| `jboss_config` | `/opt/jboss/wildfly/standalone/configuration` | JBoss configuration files |
+
+Host-side configuration directories are also bind-mounted:
+
+```yaml
+wildfly:
+  volumes:
+    - wildfly_deployments:/opt/jboss/wildfly/standalone/deployments
+    - wildfly_data:/opt/jboss/wildfly/standalone/data
+    - wildfly_config:/opt/jboss/wildfly/standalone/configuration
+    - ./config/wildfly:/etc/wildfly-config
+```
+
+Place custom datasource XML, `standalone.xml` overlays, and environment-specific resources in `./config/wildfly/` and reference them from within the container at `/etc/wildfly-config/`.
+
+## Troubleshooting
+
+<Accordion title="Application won't deploy — WAR was copied but nothing is running">
+1. Check for a `.failed` marker file in the deployments directory:
+   ```bash
+   docker exec wildfly ls /opt/jboss/wildfly/standalone/deployments/*.failed 2>/dev/null
+   docker exec wildfly cat /opt/jboss/wildfly/standalone/deployments/*.failed
+   ```
+2. Look at the WildFly server log for the deployment error:
+   ```bash
+   docker logs wildfly --tail 200
+   ```
+3. Common causes include missing datasource references, incompatible Jakarta EE API versions, or class loading conflicts. Fix the application and redeploy by copying the updated WAR.
+4. To force a fresh deployment, delete the WAR and all marker files, then recopy:
+   ```bash
+   docker exec wildfly bash -c "rm /opt/jboss/wildfly/standalone/deployments/myapp.war*"
+   docker cp target/myapp.war wildfly:/opt/jboss/wildfly/standalone/deployments/
+   ```
+</Accordion>
+
+<Accordion title="Performance degradation — application is slow or timing out">
+The most common cause is insufficient JVM heap. Check current memory usage:
+
+```bash
+docker stats wildfly jboss
+```
+
+Increase the heap allocation in `docker-compose.yml` or your override file:
+
+```yaml
+wildfly:
+  environment:
+    - JAVA_OPTS=-Xms2048m -Xmx4096m
+```
+
+Then restart the container:
+
+```bash
+docker compose restart wildfly
+```
+
+Also check whether the deployment directory volume is full or if the host machine is under disk I/O pressure.
+</Accordion>
+
+<Accordion title="Database connection fails — datasource cannot connect">
+Verify the datasource configuration by checking:
+
+1. The database host and port are reachable from inside the WildFly container:
+   ```bash
+   docker exec wildfly curl -v telnet://postgres:5432
+   ```
+2. Environment variables for datasource credentials are passed correctly via `docker-compose.yml`:
+   ```yaml
+   wildfly:
+     environment:
+       - DB_HOST=postgres
+       - DB_PORT=5432
+       - DB_NAME=myapp
+       - DB_USER=myuser
+       - DB_PASSWORD=mypassword
+   ```
+3. The `standalone.xml` datasource definition references the correct JNDI name and uses the matching environment variables.
+4. Check the WildFly management console at `http://localhost:9990` for datasource health under **Configuration → Subsystems → Datasources**.
+</Accordion>
+
+<Accordion title="'Admin user already exists' error from setup.sh">
+This is safe to ignore. The message appears when `setup.sh` runs `add-user.sh` and the `admin` account was already created from a previous run (the `wildfly_config` and `jboss_config` volumes persisted across a `docker compose down` without `-v`). The existing user and its credentials are unchanged. The `setup.sh` script catches this with:
+
+```bash
+docker exec wildfly /opt/jboss/wildfly/bin/add-user.sh admin admin --silent 2>/dev/null \
+    || echo "WildFly admin user may already exist"
+```
+
+No corrective action is needed.
+</Accordion>
+
+<Info>
+For a complete step-by-step guide on migrating applications from JBoss EAP to WildFly — including API compatibility analysis, configuration migration, and deployment verification — see [/operations/migration-guide](/operations/migration-guide).
+</Info>

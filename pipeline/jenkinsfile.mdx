@@ -1,0 +1,191 @@
+---
+title: "Jenkinsfile: 7-Stage Declarative CI/CD Pipeline"
+sidebarTitle: "Jenkinsfile"
+description: "The basic Jenkinsfile defines 7 pipeline stages: Read Build Config, Checkout, Build, Test, SonarQube Analysis, Quality Gate, and Deploy to Nexus."
+---
+
+The `Jenkinsfile` in the project root defines a declarative Jenkins pipeline that automates the full build-and-publish lifecycle for Java applications. On every run it reads `build-config.yml` to determine Java and Maven versions, checks out source code, compiles and packages with Maven, executes tests and publishes JUnit results, submits code to SonarQube for quality analysis, waits for the Quality Gate verdict, and — on protected branches — deploys artifacts to the Nexus snapshot repository.
+
+## Pipeline Overview
+
+| Stage | What it does |
+|-------|-------------|
+| **Read Build Config** | Reads `build-config.yml` with `readYaml`; sets `JAVA_VERSION`, `MAVEN_VERSION`, and `BUILD_TOOL` environment variables for all downstream stages |
+| **Checkout** | Runs `checkout scm` to retrieve source code from the SCM configured on the Jenkins job |
+| **Build** | Runs `mvn clean install -DskipTests` for standard Maven projects, or `mvn clean package -DskipTests` when `BUILD_TOOL` is `mule-maven-plugin` |
+| **Test** | Runs `mvn test` and publishes JUnit results from `**/target/surefire-reports/*.xml` via the JUnit plugin |
+| **SonarQube Analysis** | Executes `mvn sonar:sonar` inside a `withSonarQubeEnv('SonarQube')` block so the plugin automatically injects the server URL and authentication token |
+| **Quality Gate** | Calls `waitForQualityGate abortPipeline: true` inside a 5-minute timeout; aborts the pipeline if the gate fails |
+| **Deploy to Nexus** | Runs `mvn deploy` targeting `maven-snapshots`; only executes on `main`, `master`, or `develop` branches |
+
+## Complete Jenkinsfile
+
+```groovy
+// Jenkinsfile
+pipeline {
+    agent any
+
+    tools {
+        maven 'Maven 3.9.2'
+        jdk 'JDK 17'
+    }
+
+    environment {
+        NEXUS_URL = 'http://nexus:8081'
+        SONARQUBE_URL = 'http://sonarqube:9000'
+        BUILD_CONFIG = 'build-config.yml'
+    }
+
+    stages {
+        stage('Read Build Config') {
+            steps {
+                script {
+                    echo "Reading build configuration from ${BUILD_CONFIG}"
+                    if (fileExists(BUILD_CONFIG)) {
+                        def config = readYaml file: BUILD_CONFIG
+                        env.JAVA_VERSION = config.java_version ?: '17'
+                        env.MAVEN_VERSION = config.maven_version ?: '3.9.2'
+                        env.BUILD_TOOL = config.build?.tool ?: 'maven'
+                        echo "Java Version: ${env.JAVA_VERSION}"
+                        echo "Maven Version: ${env.MAVEN_VERSION}"
+                        echo "Build Tool: ${env.BUILD_TOOL}"
+                    } else {
+                        echo "Warning: ${BUILD_CONFIG} not found. Using defaults."
+                    }
+                }
+            }
+        }
+
+        stage('Checkout') {
+            steps {
+                echo 'Checking out source code...'
+                checkout scm
+            }
+        }
+
+        stage('Build') {
+            steps {
+                script {
+                    echo "Building with ${env.BUILD_TOOL}..."
+                    if (env.BUILD_TOOL == 'mule-maven-plugin') {
+                        sh 'mvn clean package -DskipTests'
+                    } else {
+                        sh 'mvn clean install -DskipTests'
+                    }
+                }
+            }
+        }
+
+        stage('Test') {
+            steps {
+                echo 'Running tests...'
+                sh 'mvn test'
+            }
+            post {
+                always {
+                    junit '**/target/surefire-reports/*.xml'
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                script {
+                    echo 'Running SonarQube analysis...'
+                    withSonarQubeEnv('SonarQube') {
+                        sh """
+                            mvn sonar:sonar \
+                            -Dsonar.projectKey=${env.JOB_NAME} \
+                            -Dsonar.projectName=${env.JOB_NAME} \
+                            -Dsonar.host.url=${SONARQUBE_URL}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Deploy to Nexus') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'master'
+                    branch 'develop'
+                }
+            }
+            steps {
+                echo 'Deploying artifacts to Nexus...'
+                withCredentials([usernamePassword(credentialsId: 'nexus-credentials',
+                                                  usernameVariable: 'NEXUS_USER',
+                                                  passwordVariable: 'NEXUS_PASS')]) {
+                    sh """
+                        mvn deploy -DskipTests \
+                        -DaltDeploymentRepository=nexus::default::${NEXUS_URL}/repository/maven-snapshots
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Pipeline completed successfully!'
+        }
+        failure {
+            echo 'Pipeline failed!'
+        }
+        always {
+            cleanWs()
+        }
+    }
+}
+```
+
+## Required Jenkins Credentials
+
+Before running the pipeline, create the following credential in **Manage Jenkins → Credentials**:
+
+| Credentials ID | Type | Used by |
+|----------------|------|---------|
+| `nexus-credentials` | Username with password | Deploy to Nexus stage — supplies `NEXUS_USER` and `NEXUS_PASS` to the `mvn deploy` command |
+
+## Creating the Pipeline Job
+
+<Steps>
+  <Step title="Open Jenkins">
+    Navigate to Jenkins at [http://localhost:8080](http://localhost:8080) and log in.
+  </Step>
+  <Step title="Create a new item">
+    Click **New Item**, enter a name for your pipeline, select **Pipeline**, and click **OK**.
+  </Step>
+  <Step title="Configure the pipeline definition">
+    Scroll to the **Pipeline** section. Under **Definition**, select **Pipeline script from SCM**. Set **SCM** to **Git** and enter your repository URL.
+  </Step>
+  <Step title="Set the script path">
+    In the **Script Path** field enter `Jenkinsfile` (the default). Leave all other fields at their defaults unless your repository requires specific credentials.
+  </Step>
+  <Step title="Save and run">
+    Click **Save**, then click **Build Now** to trigger the first run. Monitor progress in the **Stage View** on the job page.
+  </Step>
+</Steps>
+
+## Post-Build Actions
+
+The `post` block runs after every pipeline execution regardless of outcome:
+
+| Condition | Action |
+|-----------|--------|
+| `success` | Prints `Pipeline completed successfully!` to the build log |
+| `failure` | Prints `Pipeline failed!` to the build log |
+| `always` | Calls `cleanWs()` to delete the workspace and free disk space on the Jenkins agent |
+
+<Note>
+  For the full parameterized pipeline with environment selection, WildFly/JBoss deployment, per-environment Maven repositories, artifact versioning, and automated security scanning, see the [Enhanced Pipeline](/pipeline/jenkinsfile-enhanced) documentation which covers `Jenkinsfile.enhanced`.
+</Note>

@@ -1,0 +1,242 @@
+---
+title: "Configure Jenkins, SonarQube, Nexus, and App Servers"
+sidebarTitle: "Configuration"
+description: "Customize Jenkins plugins, credentials, Maven version, SonarQube database, Nexus repositories, WildFly/JBoss settings, and resource limits in Docker Compose."
+---
+
+This page covers all post-installation configuration options available in the CI/CD stack. Most Jenkins settings are applied through Groovy init scripts that run automatically on container startup, while SonarQube, Nexus, and application server settings are driven by environment variables in `docker-compose.yml`. For production hardening — adding resource limits, health checks, and pinned image versions — see the [Docker Compose Override](/setup/docker-compose-override) guide.
+
+## Jenkins Configuration
+
+Jenkins is pre-configured through a set of Groovy scripts located in `jenkins/init.groovy.d/`. These scripts run once when the Jenkins container starts and are the recommended way to automate any configuration change.
+
+### Changing Admin Credentials
+
+Edit `jenkins/init.groovy.d/01-admin-user.groovy` and replace the username and password arguments in the `createAccount` call:
+
+```groovy
+hudsonRealm.createAccount("your-username", "your-secure-password")
+```
+
+Restart the Jenkins container after saving the file to apply the change:
+
+```bash
+docker compose restart jenkins
+```
+
+### Adding Plugins
+
+Edit `jenkins/init.groovy.d/02-install-plugins.groovy` and add plugin short names to the list. The plugins are downloaded from the Jenkins update centre on the next container start.
+
+```groovy
+def plugins = [
+    "git",
+    "workflow-aggregator",
+    // Add your plugins below
+    "slack",
+    "email-ext",
+    "docker-plugin"
+]
+```
+
+<Note>
+  Plugin installation requires internet access from the Jenkins container. If
+  your environment is air-gapped, pre-download the `.hpi` files and mount them
+  into `/usr/share/jenkins/ref/plugins/` before starting the container.
+</Note>
+
+### Customising the Maven Version
+
+Edit `jenkins/init.groovy.d/05-configure-maven.groovy` and change the version string in both the installer and the installation name:
+
+```groovy
+def mavenInstaller = new Maven.MavenInstaller("3.9.3")  // Change version here
+def maven = new Maven.MavenInstallation(
+    "Maven 3.9.3",  // Update the display name to match
+    null,
+    [installSourceProperty]
+)
+```
+
+The stack ships with Maven 3.9.2 pre-configured. Keeping the name consistent with the version avoids confusion in pipeline `tools {}` blocks.
+
+### Adding JDK Installations
+
+Create a new file `jenkins/init.groovy.d/06-configure-jdk.groovy` with the following content. Adjust the JDK path to match the installation inside the Jenkins container image:
+
+```groovy
+import jenkins.model.Jenkins
+import hudson.model.JDK
+import hudson.tools.InstallSourceProperty
+
+def instance = Jenkins.getInstance()
+def jdkDesc = instance.getDescriptor("hudson.model.JDK")
+
+def jdkInstaller = new JDK.DescriptorImpl.FileOnMasterInstaller("/usr/lib/jvm/java-17-openjdk-amd64")
+def installSourceProperty = new InstallSourceProperty([jdkInstaller])
+
+def jdk = new JDK(
+    "JDK 17",
+    "/usr/lib/jvm/java-17-openjdk-amd64",
+    [installSourceProperty]
+)
+
+jdkDesc.setInstallations(jdk)
+jdkDesc.save()
+
+println "JDK configured"
+```
+
+---
+
+## SonarQube Configuration
+
+### Changing Database Credentials
+
+SonarQube uses PostgreSQL as its backend. The database credentials are set via environment variables on both the `postgres` and `sonarqube` services in `docker-compose.yml`. Both blocks must be updated together so they remain consistent:
+
+```yaml
+postgres:
+  environment:
+    - POSTGRES_USER=your-username
+    - POSTGRES_PASSWORD=your-password
+    - POSTGRES_DB=sonarqube
+
+sonarqube:
+  environment:
+    - SONAR_JDBC_URL=jdbc:postgresql://postgres:5432/sonarqube
+    - SONAR_JDBC_USERNAME=your-username
+    - SONAR_JDBC_PASSWORD=your-password
+```
+
+After editing, recreate the affected containers:
+
+```bash
+docker compose up -d --force-recreate postgres sonarqube
+```
+
+### Quality Profiles and Gates
+
+Quality profiles and quality gates can be managed through three mechanisms:
+
+1. **Web UI** — navigate to `http://localhost:9000/profiles` to create, copy, or activate language-specific quality profiles.
+2. **REST API** — use the SonarQube Web API (documented at `http://localhost:9000/web_api`) to script profile changes as part of a bootstrap pipeline.
+3. **Backup/Restore** — export a quality profile from one SonarQube instance and import it into another via **Administration → Quality Profiles → Restore**.
+
+### Custom `sonar.properties` via Volume Mount
+
+Create a local file at `sonarqube/conf/sonar.properties` with your overrides:
+
+```properties
+sonar.web.host=0.0.0.0
+sonar.web.port=9000
+sonar.jdbc.url=jdbc:postgresql://postgres:5432/sonarqube
+sonar.jdbc.username=sonar
+sonar.jdbc.password=sonar
+
+# Optional tuning
+sonar.web.context=/sonar
+sonar.ce.javaOpts=-Xmx512m
+```
+
+Then mount it into the SonarQube container by adding a volume entry in `docker-compose.yml`:
+
+```yaml
+sonarqube:
+  volumes:
+    - ./sonarqube/conf:/opt/sonarqube/conf
+```
+
+---
+
+## Nexus Configuration
+
+### Creating Maven Repositories
+
+Nexus ships without pre-created repositories. The recommended approach is to create them via the Groovy script API. Create `nexus/nexus-config.groovy`:
+
+```groovy
+repository.createMavenHosted('maven-releases')
+repository.createMavenHosted('maven-snapshots', 'SNAPSHOT')
+repository.createMavenProxy('maven-central', 'https://repo1.maven.org/maven2/')
+repository.createMavenGroup('maven-public', ['maven-releases', 'maven-snapshots', 'maven-central'])
+```
+
+Alternatively, create the `maven-releases` and `maven-snapshots` hosted repositories manually through the Nexus UI at **Administration → Repository → Repositories → Create repository**.
+
+### Memory Tuning
+
+Nexus JVM heap is controlled by the `INSTALL4J_ADD_VM_PARAMS` environment variable. Edit the value in `docker-compose.yml`:
+
+```yaml
+nexus:
+  environment:
+    - INSTALL4J_ADD_VM_PARAMS=-Xms1024m -Xmx1024m -XX:MaxDirectMemorySize=546m
+```
+
+The default setting ships with `-Xms512m -Xmx512m -XX:MaxDirectMemorySize=273m`, which is conservative. Increase heap for repositories serving large artifacts or many concurrent users.
+
+---
+
+## Resource Limits
+
+Docker Compose supports CPU and memory resource constraints through the `deploy.resources` block. Add limits to any service in `docker-compose.yml`:
+
+```yaml
+jenkins:
+  deploy:
+    resources:
+      limits:
+        cpus: '2'
+        memory: 2G
+      reservations:
+        cpus: '1'
+        memory: 1G
+```
+
+<Note>
+  Resource limits under `deploy:` are honoured by Docker when using the
+  `docker compose` CLI (Compose v2) directly. The `docker stack deploy`
+  Swarm path also respects them. If you are running Docker Desktop, ensure
+  sufficient memory is allocated to the Docker engine in the Desktop settings.
+</Note>
+
+---
+
+## Health Checks
+
+Health checks allow Docker to track service readiness and restart containers that become unresponsive. Add a `healthcheck` block to any service:
+
+**Jenkins** — uses `curl` to poll the root HTTP endpoint:
+
+```yaml
+jenkins:
+  healthcheck:
+    test: ["CMD-SHELL", "curl -f http://localhost:8080 || exit 1"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 90s
+```
+
+**SonarQube** — uses `wget` to query the `/api/system/status` endpoint:
+
+```yaml
+sonarqube:
+  healthcheck:
+    test: ["CMD-SHELL", "wget -q --spider http://localhost:9000/api/system/status || exit 1"]
+    interval: 30s
+    timeout: 10s
+    retries: 5
+    start_period: 180s
+```
+
+The `start_period` gives each service a grace period before health check failures count as restarts. SonarQube requires a longer start period because it runs database migrations on first launch.
+
+<Note>
+  A ready-to-use template containing resource limits, health checks, pinned
+  image versions, and JVM tuning for all services is provided at
+  `docker-compose.override.yml.example`. See
+  [Docker Compose Override](/setup/docker-compose-override) for the full
+  production hardening workflow.
+</Note>

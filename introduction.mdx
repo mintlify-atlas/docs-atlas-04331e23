@@ -1,0 +1,71 @@
+---
+title: "Jenkins CI/CD Environment: Automated Java Pipelines"
+sidebarTitle: "Introduction"
+description: "Jenkins CI/CD Environment is a complete Docker-based automation stack for Java teams. Ships Jenkins, SonarQube, Nexus, WildFly, and JBoss — zero manual setup."
+---
+
+The Jenkins CI/CD Environment is a production-ready, Docker Compose-based automation platform purpose-built for Java development teams. It bundles six fully interconnected services — Jenkins, SonarQube, Nexus Repository Manager, WildFly, JBoss, and PostgreSQL — into a single, self-contained stack that spins up with one command. Every service is pre-wired and auto-configured out of the box: Jenkins ships with its plugin suite installed, Maven pre-configured, and SonarQube and Nexus integrations active, so teams reach a working pipeline without touching a configuration file.
+
+## Why This Project Exists
+
+Setting up a professional CI/CD environment for Java traditionally requires provisioning multiple VMs or servers, manually installing and linking each tool, managing version compatibility, and debugging integration failures before a single line of application code is ever tested. This environment eliminates that overhead entirely. By running every service in Docker containers on a shared internal network (`cicd-network`), it gives teams a repeatable, version-controlled infrastructure that can be stood up on a developer laptop or a build server in the same way, every time. The focus shifts from infrastructure maintenance back to shipping software.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="One-Command Setup" icon="bolt">
+    Run `./setup.sh` to stop old containers, pull images, start all six services, wait for readiness, and configure application server admin users automatically — no manual steps required.
+  </Card>
+  <Card title="Auto-Configured Jenkins" icon="gear">
+    Five Groovy init scripts run on first boot to create the admin user, install essential plugins (Git, Maven, SonarQube, Nexus, Pipeline), configure credentials, wire up SonarQube, and install Maven 3.9.2.
+  </Card>
+  <Card title="Security Scanning" icon="shield-halved">
+    SonarQube Community Edition performs code quality analysis, security vulnerability detection, technical debt tracking, and automatic scanning for hardcoded passwords and secrets in every build.
+  </Card>
+  <Card title="Multi-Environment Support" icon="layer-group">
+    Ship to dev, staging, and production using environment-specific configuration files. Separate `.m2` repositories per environment and per-application Maven repository support keep builds isolated.
+  </Card>
+  <Card title="ZIP-Based Builds" icon="file-zipper">
+    Build and deploy applications directly from uploaded source ZIP archives using `upload-source.sh` — no Git repository required. The pipeline handles extraction, build, and deployment automatically.
+  </Card>
+  <Card title="Backup and Restore" icon="database">
+    `backup-restore.sh` creates full environment snapshots across all Docker volumes and supports selective component restore, providing a complete audit trail of every build artifact and configuration change.
+  </Card>
+  <Card title="JBoss → WildFly Migration" icon="arrow-right-arrow-left">
+    Run legacy JBoss EAP (WildFly 20) and modern WildFly side-by-side. Parallel deployment pipelines enable migration testing and compatibility validation before committing to production cutover.
+  </Card>
+  <Card title="Artifact Version Management" icon="tags">
+    Nexus stores Maven releases and snapshots with automatic build-number and timestamp versioning. Version information is embedded in artifacts, and rollback to any prior version is fully supported.
+  </Card>
+</CardGroup>
+
+## Prerequisites
+
+Before running the setup script, ensure your machine meets the following requirements:
+
+- **Operating System**: Ubuntu Linux or a compatible Linux distribution
+- **Docker**: version 20.10 or later
+- **Docker Compose**: version 1.29 or later (or Docker Compose V2 via `docker compose`)
+- **RAM**: 6 GB or more available (SonarQube + Nexus are memory-intensive; 8 GB+ recommended)
+- **Disk space**: 15 GB or more free (Docker images, volumes, and build artifacts)
+
+<Warning>
+  Nexus Repository Manager alone recommends a minimum of 4 GB of heap. Running all six services simultaneously on a machine with less than 6 GB of free RAM will result in containers being killed by the OOM reaper.
+</Warning>
+
+## What's Included
+
+The following six Docker services are started and networked together by `docker-compose.yml`:
+
+| Service | Container | Description |
+|---|---|---|
+| **Jenkins** | `jenkins` | CI/CD orchestration engine. Auto-configured with plugins, Maven, SonarQube integration, and a sample `Jenkinsfile` pipeline. |
+| **SonarQube** | `sonarqube` | Static analysis platform for code quality metrics, security vulnerability detection, and quality gate enforcement. |
+| **Nexus Repository Manager** | `nexus` | Binary artifact repository for Maven releases and snapshots. Stores versioned JARs, WARs, and configuration properties. |
+| **WildFly** | `wildfly` | Modern Jakarta EE 9+ application server. Primary deployment target for built artifacts; supports hot deployment. |
+| **JBoss EAP** | `jboss` | Legacy WildFly 20-based application server. Used for migration testing and running older Java EE applications side-by-side with WildFly. |
+| **PostgreSQL** | `postgres` | Internal-only database used exclusively by SonarQube for persistent storage of analysis results and quality history. |
+
+<Note>
+  Ready to get your environment running? Head to the [Quickstart guide](/quickstart) for step-by-step instructions to clone, start, and run your first automated Java pipeline in under 10 minutes.
+</Note>

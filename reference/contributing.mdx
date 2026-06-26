@@ -1,0 +1,255 @@
+---
+title: "Contributing to the Jenkins CI/CD Environment"
+sidebarTitle: "Contributing"
+description: "Contribution guidelines for the CI/CD environment: issue reporting, pull requests, adding services or Jenkins plugins, code style standards, and testing requirements."
+---
+
+Contributions to the CI/CD environment are welcome — whether you're fixing a bug, adding a new service, improving documentation, or enhancing the Jenkins pipeline configuration. This guide explains how to report issues, set up a development environment, follow the project's code style, and submit a pull request.
+
+## Reporting Issues
+
+Before opening a new issue, search the existing tracker to avoid duplicates. When creating an issue, include:
+
+- A **clear description** of the problem
+- **Steps to reproduce** the issue
+- **Expected vs. actual behavior**
+- Your **OS and Docker version** (`docker --version`, `docker compose version`)
+- Any **relevant log output** from `docker compose logs <service-name>`
+
+## Setting Up a Development Environment
+
+<Steps>
+  <Step title="Fork the repository on GitHub">
+    Click **Fork** on the repository page to create your own copy.
+  </Step>
+  <Step title="Clone your fork and enter the directory">
+    ```bash
+    git clone https://github.com/YOUR-USERNAME/CICD.git
+    cd CICD
+    ```
+  </Step>
+  <Step title="Create a feature branch">
+    ```bash
+    git checkout -b feature/your-feature-name
+    ```
+    Use a descriptive branch name that reflects the change (e.g. `feature/add-harbor-registry` or `fix/sonarqube-health-check`).
+  </Step>
+  <Step title="Start the environment">
+    ```bash
+    ./setup.sh
+    ```
+    This brings up all services and waits for them to be healthy before exiting.
+  </Step>
+</Steps>
+
+## Making Changes
+
+Keep contributions focused and testable:
+
+- **Always run `./validate.sh`** before submitting — it checks that all containers are running, services are reachable, volumes exist, and configuration files are valid.
+- **Update relevant documentation** — if your change affects behaviour described in `README.md`, `QUICKSTART.md`, `CONFIGURATION.md`, or `TROUBLESHOOTING.md`, update those files too.
+- **Keep changes simple and focused** — avoid bundling unrelated fixes in a single pull request.
+
+## Adding a New Service
+
+<Steps>
+  <Step title="Add the service to docker-compose.yml">
+    Follow the existing service definitions. Every service must declare a `container_name`, `image`, `restart` policy, `ports`, `volumes`, and `networks`:
+
+    ```yaml
+    services:
+      your-service:
+        image: your-image:tag
+        container_name: your-service
+        restart: unless-stopped
+        ports:
+          - "port:port"
+        volumes:
+          - your_service_data:/data
+        networks:
+          - cicd-network
+
+    volumes:
+      your_service_data:
+    ```
+  </Step>
+  <Step title="Update setup.sh to wait for the new service">
+    Add a readiness check that polls the service's health endpoint before the script exits, matching the pattern used for the existing services.
+  </Step>
+  <Step title="Update validate.sh to health-check the new service">
+    Add a `test_result` call in `validate.sh` that verifies the container is running and the service is reachable from the host, following the existing test functions.
+  </Step>
+  <Step title="Document the new service">
+    - Add it to the **Service URLs** table in `README.md`
+    - List its ports in the **Port Reference** section
+    - Add common failure modes to `TROUBLESHOOTING.md`
+  </Step>
+</Steps>
+
+## Adding Jenkins Plugins
+
+Edit `jenkins/init.groovy.d/02-install-plugins.groovy` and add the plugin ID to the list:
+
+```groovy
+def plugins = [
+    "git",
+    "workflow-aggregator",
+    "your-new-plugin",  // Add new plugin IDs here
+]
+```
+
+Restart Jenkins and confirm the plugin appears under **Manage Jenkins → Installed Plugins**.
+
+## Adding Jenkins Configuration
+
+Create a new numbered Groovy script in `jenkins/init.groovy.d/`. Scripts are executed in lexicographic order, so choose a prefix that places your script after any dependencies:
+
+```groovy
+// jenkins/init.groovy.d/06-your-config.groovy
+import jenkins.model.Jenkins
+
+def instance = Jenkins.getInstance()
+
+// Your configuration code here
+
+instance.save()
+println "Your configuration completed"
+```
+
+<Tip>
+  Use `println` statements liberally — they appear in `docker logs jenkins` and make it easy to confirm that your script ran during container startup.
+</Tip>
+
+## Code Style
+
+<Tabs>
+  <Tab title="Shell Scripts">
+    ```bash
+    #!/bin/bash
+    set -e  # Exit immediately on error
+
+    # Use meaningful variable names
+    SERVICE_NAME="jenkins"
+
+    # Add comments for complex logic
+    # This checks if Docker is installed before proceeding
+    if ! command -v docker &> /dev/null; then
+        echo "ERROR: Docker is not installed"
+        exit 1
+    fi
+
+    # Use functions for reusable logic
+    check_service() {
+        local service=$1
+        docker ps | grep -q "$service"
+    }
+    ```
+
+    Key rules:
+    - Always include `set -e` at the top
+    - Use meaningful variable names in `UPPER_SNAKE_CASE`
+    - Extract repeated logic into functions
+    - Comment any non-obvious behaviour
+  </Tab>
+  <Tab title="Groovy">
+    ```groovy
+    import jenkins.model.Jenkins
+
+    // Clear comments explaining intent
+    def instance = Jenkins.getInstance()
+
+    // Meaningful variable names
+    def pluginManager = instance.getPluginManager()
+
+    // Always wrap side-effectful code in try/catch
+    try {
+        // Your configuration code
+    } catch (Exception e) {
+        println "Error: ${e.message}"
+    }
+
+    println "Configuration completed successfully"
+    ```
+
+    Key rules:
+    - Add a comment block describing what the script configures
+    - Use meaningful variable names
+    - Always use `try/catch` around external calls or mutations
+    - End every script with a `println` confirmation message
+  </Tab>
+  <Tab title="YAML">
+    ```yaml
+    # Comments explain non-obvious configuration choices
+    services:
+      service-name:
+        image: image:tag
+        # 2-space indentation throughout
+        environment:
+          # Use descriptive names for environment variables
+          - SERVICE_CONFIG=value
+    ```
+
+    Key rules:
+    - Use 2-space indentation (no tabs)
+    - Add comments above non-obvious keys
+    - Keep environment variable names descriptive and consistent with the service's documentation
+  </Tab>
+</Tabs>
+
+## Testing Checklist
+
+Before submitting a pull request, work through the following checks:
+
+<Accordion title="Full PR testing checklist">
+- [ ] All services start successfully (`docker compose up -d`)
+- [ ] All services are accessible (Jenkins, SonarQube, Nexus, WildFly, JBoss)
+- [ ] The example project builds without errors (`cd examples/webapp-sample && mvn clean install`)
+- [ ] A pipeline runs to completion in Jenkins
+- [ ] `./validate.sh` passes with zero failures
+- [ ] No unexpected errors appear in `docker compose logs`
+- [ ] All relevant documentation files are updated
+</Accordion>
+
+Test on a clean environment to catch any dependency on pre-existing state:
+
+```bash
+# Full reset
+docker compose down -v
+rm -rf examples/target/
+
+# Fresh setup
+./setup.sh
+
+# Validate
+./validate.sh
+```
+
+## Commit Message Guidelines
+
+Write commit messages that explain **what** changed and **why**, not just **what files** were touched.
+
+```bash
+# Good — specific and informative
+git commit -m "Add PostgreSQL health check to docker-compose"
+git commit -m "Fix Jenkins plugin installation timeout"
+git commit -m "Update README with troubleshooting steps for SonarQube"
+
+# Bad — vague and unhelpful
+git commit -m "fix bug"
+git commit -m "updates"
+git commit -m "changes"
+```
+
+## Contribution Areas
+
+Not sure where to start? Here are some ideas grouped by difficulty:
+
+| Difficulty | Examples |
+|------------|---------|
+| **Easy** | Fix typos in documentation, improve error messages in scripts, add FAQ entries to `TROUBLESHOOTING.md`, enhance example projects |
+| **Medium** | Add Jenkins plugins to the init script, improve Groovy configuration scripts, add health checks, create additional backup/restore scripts |
+| **Advanced** | Add new services (e.g. GitLab, Harbor), implement HTTPS/TLS, add clustering support, create Kubernetes manifests |
+
+<Note>
+  By contributing, you agree that your contributions will be licensed under the same license as the project.
+</Note>

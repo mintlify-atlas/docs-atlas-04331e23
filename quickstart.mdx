@@ -1,47 +1,184 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with the Jenkins CI/CD Environment"
+sidebarTitle: "Quickstart"
+description: "Provision Jenkins, SonarQube, Nexus, WildFly, and JBoss in Docker with a single command and run your first automated Java pipeline in under 10 minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+This guide walks you through cloning the repository, starting all six services with a single script, accessing every tool's web UI, deploying a sample Java web application to WildFly, and creating your first Jenkins pipeline job. By the end you will have a fully operational CI/CD stack — Jenkins detecting code changes, SonarQube enforcing quality gates, Nexus storing versioned artifacts, and WildFly running your application.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
 
-    ```bash
-    npm install your-package
-    ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+  ### Clone the Repository
 
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+  Clone the project and enter its directory:
 
-    ```bash
-    your-cli start
-    ```
-  </Step>
+  ```bash
+  git clone <repository-url>
+  cd CICD
+  ```
+
+  All subsequent commands are run from the `CICD` root directory. The directory contains `docker-compose.yml`, `setup.sh`, a sample `Jenkinsfile`, `build-config.yml`, and the `jenkins/init.groovy.d/` auto-configuration scripts.
+
+  ### Run the Setup Script
+
+  Execute the setup script to bring the entire stack online:
+
+  ```bash
+  ./setup.sh
+  ```
+
+  The script performs the following steps in order:
+
+  1. **Stops existing containers** — runs `docker compose down -v` to remove any prior state
+  2. **Starts all six services** — pulls images and starts Jenkins, PostgreSQL, SonarQube, Nexus, WildFly, and JBoss in detached mode
+  3. **Waits for readiness** — polls each service's HTTP endpoint in a loop (5-second intervals) until it responds
+  4. **Configures app server admin users** — runs `add-user.sh admin admin --silent` inside both the `wildfly` and `jboss` containers
+  5. **Allows full initialization** — waits an additional 30 seconds for all background initialization to complete
+
+  <Info>
+    The first run downloads all Docker images and may take several minutes depending on your internet connection. Subsequent runs are significantly faster because images are cached locally.
+  </Info>
+
+  ### Access the Services
+
+  Once `setup.sh` completes, every service is available on `localhost`:
+
+  | Service | URL | Username | Password |
+  |---|---|---|---|
+  | Jenkins | http://localhost:8080 | `admin` | `admin` |
+  | SonarQube | http://localhost:9000 | `admin` | `admin` |
+  | Nexus | http://localhost:8081 | `admin` | *(generated — see below)* |
+  | WildFly (HTTP) | http://localhost:8090 | `admin` | `admin` |
+  | WildFly (Admin) | http://localhost:9990 | `admin` | `admin` |
+  | JBoss (HTTP) | http://localhost:8070 | `admin` | `admin` |
+  | JBoss (Admin) | http://localhost:9970 | `admin` | `admin` |
+
+  **Retrieving the Nexus admin password**
+
+  Nexus generates a random password on first startup and writes it to a file inside its container. Retrieve it with:
+
+  ```bash
+  docker exec nexus cat /nexus-data/admin.password
+  ```
+
+  <Warning>
+    The default credentials (`admin`/`admin`) are intentional for local development only. Change all credentials before exposing any service to a network.
+  </Warning>
+
+  ### Deploy the Sample Application
+
+  The repository includes a sample Jakarta EE web application under `examples/webapp-sample/`. Build it with Maven and copy the resulting WAR directly into WildFly's hot-deployment directory:
+
+  ```bash
+  cd examples/webapp-sample
+  mvn clean package
+  docker cp target/*.war wildfly:/opt/jboss/wildfly/standalone/deployments/
+  ```
+
+  WildFly monitors the `standalone/deployments/` directory and deploys the WAR automatically. Check the WildFly admin console at http://localhost:9990 to confirm the deployment status, or tail the container log:
+
+  ```bash
+  docker compose logs -f wildfly
+  ```
+
+  ### Create a Jenkins Pipeline Job
+
+  Connect Jenkins to your source repository and trigger your first automated build:
+
+  1. Open Jenkins at **http://localhost:8080** and log in as `admin` / `admin`
+  2. Click **New Item** in the left sidebar
+  3. Enter a name (e.g., `my-java-pipeline`) and select **Pipeline**, then click **OK**
+  4. Scroll to the **Pipeline** section
+  5. Set **Definition** to **Pipeline script from SCM**
+  6. Set **SCM** to **Git** and enter your repository URL
+  7. Set **Script Path** to `Jenkinsfile`
+  8. Click **Save**
+  9. Click **Build Now** in the left sidebar
+
+  Jenkins will checkout your code, run `mvn clean install`, execute tests, submit a SonarQube analysis, wait for the quality gate, and deploy artifacts to Nexus — all driven by the pipeline stages defined in your `Jenkinsfile`.
+
+  ### View Build Results
+
+  After the build completes, inspect the results across all three tools:
+
+  **Jenkins** — Build logs and pipeline stage view:
+  ```
+  http://localhost:8080/job/<your-pipeline-name>/
+  ```
+
+  **SonarQube** — Code quality dashboard with issue breakdown, security hotspots, and coverage:
+  ```
+  http://localhost:9000/projects
+  ```
+
+  **Nexus** — Deployed Maven artifacts under the snapshots repository:
+  ```
+  http://localhost:8081/#browse/browse:maven-snapshots
+  ```
+
 </Steps>
 
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
+## Troubleshooting
 
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
+<Accordion title="Services won't start or keep restarting">
+  Check whether Docker has enough resources to run all six containers:
+
+  ```bash
+  docker stats
+  ```
+
+  Look for containers with very high memory usage or that are being killed. The full stack requires at least 6 GB of available RAM. You can also inspect individual service logs:
+
+  ```bash
+  docker compose logs jenkins
+  docker compose logs sonarqube
+  docker compose logs nexus
+  ```
+
+  If you need to reset everything to a clean state:
+
+  ```bash
+  docker compose down -v
+  ./setup.sh
+  ```
+</Accordion>
+
+<Accordion title="Jenkins is not accessible at localhost:8080">
+  Jenkins takes 2–3 minutes to fully boot after the container starts — it must complete plugin loading and run the five Groovy init scripts before the web UI becomes responsive. Wait for the following line to appear in the log before trying the browser:
+
+  ```bash
+  docker compose logs -f jenkins
+  # Look for: "Jenkins is fully up and running"
+  ```
+
+  If Jenkins never becomes accessible, check that port 8080 is not already bound on your host:
+
+  ```bash
+  sudo lsof -i :8080
+  ```
+</Accordion>
+
+<Accordion title="SonarQube shows a database connection error on startup">
+  SonarQube depends on PostgreSQL being fully ready before it can connect. The `depends_on` directive in `docker-compose.yml` starts PostgreSQL first, but PostgreSQL itself needs a few seconds to accept connections after the container is running. SonarQube will retry automatically. Wait 2–3 minutes and refresh the browser. You can monitor progress with:
+
+  ```bash
+  docker compose logs -f sonarqube
+  # Look for: "SonarQube is up"
+  ```
+</Accordion>
+
+<Accordion title="Nexus is slow to start or the UI is unresponsive">
+  Nexus Repository Manager is memory-intensive. The `docker-compose.yml` starts it with `-Xms512m -Xmx512m`, but Nexus also allocates significant direct memory. Ensure your Docker host has at least 4 GB of RAM available for Nexus alone. Nexus can take 3–5 minutes to become fully responsive on first start while it initializes its internal Orient DB and blob stores. Check the log for startup progress:
+
+  ```bash
+  docker compose logs -f nexus
+  # Look for: "Started Sonatype Nexus"
+  ```
+</Accordion>
+
+## Next Steps
+
+With your environment running and your first pipeline green, explore the rest of the documentation to configure advanced pipeline behaviour:
+
+- [Build Configuration Reference](/pipeline/build-config) — Learn how to customize `build-config.yml` to control Java version, Maven version, test execution, SonarQube settings, and Nexus deployment targets.
+- [Jenkinsfile Pipeline Guide](/pipeline/jenkinsfile) — Deep-dive into the pipeline stages, multi-environment deployments, ZIP-based builds, and how to add quality gates and notifications.

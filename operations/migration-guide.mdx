@@ -1,0 +1,266 @@
+---
+title: "Migrate Java Applications from JBoss EAP to WildFly"
+sidebarTitle: "Migration Guide"
+description: "Migrate Java EE apps to Jakarta EE on WildFly using the CI/CD stack's side-by-side deployment: update dependencies, replace javax imports, run parallel testing, then cut over."
+---
+
+The CI/CD stack runs WildFly and JBoss EAP side-by-side specifically to support migration. You can deploy the same application to both servers simultaneously for parallel testing and gradual traffic cutover — with no downtime. JBoss continues serving production traffic on port 8070 while you validate the migrated application on WildFly at port 8090, giving you a safe fallback at every stage.
+
+## JBoss EAP vs WildFly
+
+| Feature | JBoss EAP | WildFly |
+|---|---|---|
+| Licensing | Commercial (Red Hat) | Open Source |
+| Support | Enterprise Support | Community |
+| Jakarta EE | Supported | Fully Supported |
+| Java Version | Up to Java 11/17 | Java 17+ |
+| Release Cycle | Slower, stable | Faster, latest features |
+
+WildFly is the upstream community project from which JBoss EAP is derived. Migrating to WildFly eliminates licensing costs and gives your applications access to the latest Jakarta EE 9+ APIs and Java 17+ runtime features.
+
+---
+
+## Migration Strategy
+
+A successful migration proceeds through four phases. Do not skip phases — each one reduces the risk of the next.
+
+<Steps>
+  <Step title="Phase 1: Assessment">
+    Before changing any code, fully understand the scope of the migration:
+
+    - Inventory all JBoss-deployed applications and their inter-dependencies
+    - Identify Maven dependency versions, particularly Java EE API coordinates
+    - Review Jakarta EE compatibility for all third-party libraries
+    - Document custom JBoss configurations in `standalone.xml`, datasource definitions, security domains, and JMS destinations
+  </Step>
+
+  <Step title="Phase 2: Preparation">
+    Update the project to target Jakarta EE and WildFly:
+
+    - Update `pom.xml` to replace Java EE dependencies with Jakarta EE equivalents
+    - Replace all `javax.*` import statements with `jakarta.*`
+    - Update `web.xml`, `persistence.xml`, and other deployment descriptors to the Jakarta EE 5.0 namespace
+    - Prepare environment-specific properties files in `config/environments/` for the WildFly target
+  </Step>
+
+  <Step title="Phase 3: Testing">
+    Validate the migrated application before touching staging or production:
+
+    - Deploy to WildFly in the `dev` environment using the CI/CD pipeline with `TARGET_SERVER=wildfly`
+    - Run the full automated test suite through Jenkins
+    - Perform manual validation against the checklist below
+    - Compare application behaviour, response times, and log output between the JBoss and WildFly instances
+  </Step>
+
+  <Step title="Phase 4: Migration">
+    Once validated in dev, execute the gradual cutover:
+
+    - Deploy to staging with `TARGET_SERVER=wildfly` and run full regression
+    - Run JBoss and WildFly instances in parallel using the blue-green approach described below
+    - Gradually shift traffic from port 8070 to port 8090 using your load balancer
+    - Monitor error rates, response times, and application logs during the traffic shift
+    - Complete the cutover and decommission the JBoss deployment when stable
+  </Step>
+</Steps>
+
+---
+
+## Updating Dependencies
+
+Replace the Java EE platform BOM with the Jakarta EE API in your `pom.xml`:
+
+```xml
+<!-- Replace Java EE with Jakarta EE -->
+<dependency>
+    <groupId>jakarta.platform</groupId>
+    <artifactId>jakarta.jakartaee-api</artifactId>
+    <version>9.1.0</version>
+    <scope>provided</scope>
+</dependency>
+
+<!-- Update Servlet API -->
+<dependency>
+    <groupId>jakarta.servlet</groupId>
+    <artifactId>jakarta.servlet-api</artifactId>
+    <version>5.0.0</version>
+    <scope>provided</scope>
+</dependency>
+```
+
+Both dependencies have `provided` scope because WildFly ships the Jakarta EE APIs as part of the application server runtime — they must not be bundled inside the WAR.
+
+---
+
+## Updating Imports
+
+Every `javax.*` import that corresponds to a Jakarta EE specification must be changed to `jakarta.*`. The package roots are identical; only the top-level namespace changes:
+
+```java
+// Old (Java EE)
+import javax.servlet.*;
+import javax.persistence.*;
+import javax.ejb.*;
+
+// New (Jakarta EE)
+import jakarta.servlet.*;
+import jakarta.persistence.*;
+import jakarta.ejb.*;
+```
+
+For large codebases, automate the replacement with `sed`:
+
+```bash
+find src -name "*.java" -type f -exec sed -i 's/javax\.servlet/jakarta.servlet/g' {} +
+find src -name "*.java" -type f -exec sed -i 's/javax\.persistence/jakarta.persistence/g' {} +
+find src -name "*.java" -type f -exec sed -i 's/javax\.\ejb/jakarta.ejb/g' {} +
+```
+
+Run these commands from the project root and then compile immediately to surface any missed references.
+
+---
+
+## Updating web.xml
+
+Update the `web.xml` namespace from the Java EE schema to the Jakarta EE 5.0 schema:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<web-app xmlns="https://jakarta.ee/xml/ns/jakartaee"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="https://jakarta.ee/xml/ns/jakartaee
+         https://jakarta.ee/xml/ns/jakartaee/web-app_5_0.xsd"
+         version="5.0">
+    <!-- Configuration -->
+</web-app>
+```
+
+If the application uses JPA, update `persistence.xml` to the Jakarta Persistence 3.0 schema:
+
+```xml
+<persistence xmlns="https://jakarta.ee/xml/ns/persistence"
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+             xsi:schemaLocation="https://jakarta.ee/xml/ns/persistence
+             https://jakarta.ee/xml/ns/persistence/persistence_3_0.xsd"
+             version="3.0">
+    <!-- Configuration -->
+</persistence>
+```
+
+---
+
+## WildFly Maven Plugin
+
+Add the WildFly Maven plugin to `pom.xml` to enable direct deployment from Maven during development:
+
+```xml
+<plugin>
+    <groupId>org.wildfly.plugins</groupId>
+    <artifactId>wildfly-maven-plugin</artifactId>
+    <version>4.2.0.Final</version>
+    <configuration>
+        <hostname>wildfly</hostname>
+        <port>9990</port>
+        <username>admin</username>
+        <password>admin</password>
+    </configuration>
+</plugin>
+```
+
+With this plugin configured, you can deploy directly from Maven using `mvn wildfly:deploy`. The CI/CD pipeline uses `docker cp` for deployments, but the plugin is useful for developer inner-loop workflows.
+
+---
+
+## Configuring the CI/CD Pipeline for Migration
+
+<Steps>
+  <Step title="Copy Jenkinsfile.enhanced to Jenkinsfile">
+    ```bash
+    cp Jenkinsfile.enhanced Jenkinsfile
+    ```
+  </Step>
+
+  <Step title="Set TARGET_SERVER=wildfly in pipeline parameters">
+    When creating the Jenkins job, set the `TARGET_SERVER` default to `wildfly` under the pipeline parameters. This ensures all builds default to deploying to WildFly rather than JBoss.
+  </Step>
+
+  <Step title="Update build-config.yml">
+    Change the `appserver.type` field to `wildfly`:
+
+    ```yaml
+    appserver:
+      type: wildfly
+    ```
+
+    This tells the pipeline which application server to use when reading deployment configuration.
+  </Step>
+
+  <Step title="Commit and push to trigger the pipeline">
+    ```bash
+    git add .
+    git commit -m "Migrate to WildFly with CI/CD pipeline"
+    git push origin main
+    ```
+
+    Jenkins will detect the push and run the full pipeline — security scan, build, test, SonarQube analysis, and deployment to WildFly.
+  </Step>
+</Steps>
+
+---
+
+## Parallel Running (Blue-Green)
+
+The CI/CD stack's side-by-side server configuration makes blue-green migration straightforward:
+
+- **JBoss (blue)** runs on port `8070` — serving current production traffic
+- **WildFly (green)** runs on port `8090` — receiving the migrated application
+
+Once both servers are running the same application (JBoss with the Java EE build, WildFly with the Jakarta EE build), configure your load balancer or reverse proxy to split incoming traffic:
+
+1. Start with 5–10% of traffic routed to WildFly at port 8090
+2. Monitor error rates, response times, and application logs on both instances
+3. Gradually increase the WildFly percentage in increments (e.g., 10% → 25% → 50% → 100%)
+4. At 100% WildFly traffic, decommission the JBoss deployment and remove it from the load balancer pool
+
+This approach ensures that any compatibility issue surfaced under real production load can be mitigated by shifting traffic back to JBoss without a code change or a deployment rollback.
+
+---
+
+## Rollback
+
+Because JBoss remains running throughout the migration, rollback is immediate. If a problem is detected at any stage, simply redirect all traffic back to port 8070. No artifact restore or container restart is required — JBoss has been serving traffic continuously and its state is unaffected.
+
+For a code-level rollback on WildFly, use the version history in Nexus to redeploy a previous WAR artifact:
+
+```bash
+docker cp old-version.war wildfly:/opt/jboss/wildfly/standalone/deployments/
+```
+
+---
+
+## Manual Testing Checklist
+
+Before shifting any production traffic to WildFly, work through this checklist on the dev and staging deployments:
+
+<Accordion title="Manual Testing Checklist">
+  - [ ] Application starts successfully and appears in WildFly deployment list
+  - [ ] All HTTP endpoints return expected responses
+  - [ ] Database connections are established and queries succeed
+  - [ ] Authentication and authorization flows work correctly
+  - [ ] Logging is configured correctly and output appears in `docker logs wildfly`
+  - [ ] Environment variables and properties are loaded from `config/environments/`
+  - [ ] External service integrations (APIs, message queues, caches) are functional
+</Accordion>
+
+You can run automated performance comparisons using Apache Bench to compare throughput and latency between the two servers:
+
+```bash
+# Baseline on JBoss
+ab -n 1000 -c 10 http://localhost:8070/your-app/
+
+# Compare on WildFly
+ab -n 1000 -c 10 http://localhost:8090/your-app/
+```
+
+<Note>
+  The Nexus version history lets you roll back to any previous WAR artifact or properties archive at any point in the migration. See [Version Management](/operations/version-management) for full details on downloading and applying versioned artifacts.
+</Note>

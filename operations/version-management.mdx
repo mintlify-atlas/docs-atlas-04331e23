@@ -1,0 +1,211 @@
+---
+title: "Build Versioning and Artifact Tracking in the Pipeline"
+sidebarTitle: "Version Management"
+description: "Every pipeline build gets a unique version in BUILD_NUMBER-TIMESTAMP format. Version metadata is embedded in WAR files and versioned configuration archives are stored in Nexus."
+---
+
+The CI/CD environment automatically generates a unique version identifier for every build and embeds it into both the WAR artifact and a companion configuration archive stored in Nexus. This means every deployed artifact is fully traceable — you can identify exactly which build produced a running application, which Git commit it came from, and which environment properties were active at deployment time.
+
+## Version Format
+
+Every build receives a version identifier derived from the Jenkins build number and a timestamp:
+
+```text
+{BUILD_NUMBER}-{TIMESTAMP}
+```
+
+**Example:** `42-20251025-143022`
+
+The version is set in the **Initialize** stage of `Jenkinsfile.enhanced`:
+
+```groovy
+def timestamp = new Date().format('yyyyMMdd-HHmmss')
+env.APP_VERSION = "${env.BUILD_NUMBER}-${timestamp}"
+```
+
+The timestamp format is `yyyyMMdd-HHmmss`, producing strings like `20251025-143022`. Combined with the Jenkins build number, this gives each build a version that is both human-readable and guaranteed to be unique across the lifetime of the job.
+
+---
+
+## version.properties in WAR Files
+
+The **Version and Tag Artifact** stage in `Jenkinsfile.enhanced` creates a `version.properties` file and injects it directly into the built WAR using the `jar` command:
+
+```bash
+jar uf target/*.war version.properties
+```
+
+The file contains a complete snapshot of the build context at the moment of deployment:
+
+```properties
+VERSION=42-20251025-143022
+ENVIRONMENT=production
+BUILD_NUMBER=42
+BUILD_DATE=2025-10-25T14:30:22Z
+GIT_COMMIT=abc123def
+GIT_BRANCH=main
+BUILT_BY=Jenkins
+TARGET_SERVER=wildfly
+```
+
+This file travels with the WAR wherever it is deployed, making it possible to inspect the provenance of any running application without access to Jenkins or Nexus.
+
+---
+
+## Retrieving Version from a Deployed App
+
+Any Java component running inside the deployed WAR can read `version.properties` from the classpath at runtime:
+
+```java
+Properties props = new Properties();
+props.load(getClass().getClassLoader().getResourceAsStream("version.properties"));
+String version = props.getProperty("VERSION");
+```
+
+This is useful for exposing a `/version` or `/health` endpoint that reports the deployed build version, or for including version context in application logs.
+
+---
+
+## Properties Versioning in Nexus
+
+In addition to versioning the WAR artifact, the pipeline packages the active environment configuration and uploads it to Nexus as a versioned tarball. This is handled by the **Store Properties Version** stage.
+
+**Archive name format:**
+
+```text
+properties-{ENV}-{VERSION}.tar.gz
+```
+
+**Example:** `properties-prod-42-20251025-143022.tar.gz`
+
+**Nexus upload path:**
+
+```text
+repository/maven-snapshots/properties/{JOB_NAME}/{VERSION}/
+```
+
+Each properties archive also includes a `metadata.json` file generated at build time:
+
+```json
+{
+  "version": "42-20251025-143022",
+  "environment": "production",
+  "buildNumber": "42",
+  "timestamp": "2025-10-25T14:30:22Z",
+  "gitCommit": "abc123def",
+  "gitBranch": "main"
+}
+```
+
+This JSON file makes it straightforward to query the Nexus raw repository programmatically and match configuration archives to specific code versions.
+
+---
+
+## Downloading a Specific Version
+
+Use `curl` to retrieve a versioned properties archive from the Nexus raw repository:
+
+```bash
+curl -O http://nexus:8081/repository/maven-snapshots/\
+properties/myapp/42-20251025-143022/\
+properties-prod-42-20251025-143022.tar.gz
+```
+
+To extract and apply the properties:
+
+```bash
+tar xzf properties-prod-42-20251025-143022.tar.gz
+cp properties-42-20251025-143022/* config/environments/prod/
+```
+
+---
+
+## Version History in Nexus
+
+All versioned artifacts — WAR files and properties archives — are browsable in the Nexus UI:
+
+```text
+http://localhost:8081/#browse/browse:maven-snapshots
+```
+
+Navigate to the project path to see the full version history:
+
+```text
+com/example/webapp-sample/
+├── 1.0.0-42-20251025-143022/
+├── 1.0.0-43-20251025-150301/
+└── 1.0.0-44-20251025-163045/
+```
+
+Properties archives are stored under a parallel path:
+
+```text
+properties/
+└── myapp/
+    ├── 42-20251025-143022/
+    │   └── properties-prod-42-20251025-143022.tar.gz
+    ├── 43-20251025-150301/
+    │   └── properties-prod-43-20251025-150301.tar.gz
+    └── 44-20251025-163045/
+        └── properties-prod-44-20251025-163045.tar.gz
+```
+
+---
+
+## Rollback
+
+Rolling back to a previous version is a four-step process using artifacts already stored in Nexus:
+
+<Steps>
+  <Step title="Find the desired version">
+    Browse to `http://localhost:8081/#browse/browse:maven-snapshots` and locate the WAR artifact for the version you want to roll back to.
+  </Step>
+
+  <Step title="Download the WAR artifact">
+    Download the versioned WAR from Nexus to your local machine or directly onto the host running the Docker stack.
+  </Step>
+
+  <Step title="Deploy the old WAR to WildFly">
+    Copy the downloaded WAR into WildFly's hot-deploy directory:
+
+    ```bash
+    docker cp old-version.war wildfly:/opt/jboss/wildfly/standalone/deployments/
+    ```
+
+    For JBoss, substitute `jboss` for `wildfly`.
+  </Step>
+
+  <Step title="Restore the matching properties archive (if needed)">
+    Download the properties archive that corresponds to the rolled-back version and apply it to the environment:
+
+    ```bash
+    curl -O http://nexus:8081/repository/maven-snapshots/\
+    properties/myapp/42-20251025-143022/\
+    properties-prod-42-20251025-143022.tar.gz
+
+    tar xzf properties-prod-42-20251025-143022.tar.gz
+    cp properties-42-20251025-143022/* config/environments/prod/
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Configuring Versioning in build-config.yml
+
+The versioning behaviour is controlled by the `versioning` block in `build-config.yml`:
+
+```yaml
+versioning:
+  enabled: true
+  format: ${BUILD_NUMBER}-${TIMESTAMP}
+  store_properties: true
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Enables automatic version generation and artifact tagging |
+| `format` | `${BUILD_NUMBER}-${TIMESTAMP}` | Version string format using Jenkins environment variables |
+| `store_properties` | `true` | Uploads versioned environment properties to the Nexus raw repository |
+
+Set `store_properties: false` to disable the properties archive upload if your environment does not use environment-specific configuration files.

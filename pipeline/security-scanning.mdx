@@ -1,0 +1,147 @@
+---
+title: "Automated Security Scanning in CI/CD Pipelines"
+sidebarTitle: "Security Scanning"
+description: "The CI/CD pipeline automatically scans source code for hardcoded passwords, API keys, and tokens. Builds fail immediately when secrets are detected in source files."
+---
+
+Jenkins CI/CD Environment includes automated security scanning that detects hardcoded credentials before code is deployed. The **Security Scan - Password Detection** stage in `Jenkinsfile.enhanced` runs grep-based pattern matching against all source files under the `src/` directory and fails the build immediately if any matches are found — preventing secrets from ever reaching a deployed artifact.
+
+## How It Works
+
+The scan stage runs three independent grep passes against `src/`, each targeting a different category of hardcoded secret. Results are appended to a `security-scan.txt` report file that is archived alongside build artifacts at the end of the run.
+
+| Pattern | What it catches |
+|---------|-----------------|
+| `grep -r -i "password.*=.*['\"]"` | Hardcoded passwords in any assignment where the right-hand side begins with a quote character |
+| `grep -r -i "api[_-]key.*=.*['\"]"` | Hardcoded API keys following the `api_key` or `api-key` naming convention |
+| `grep -r -i "token.*=.*['\"]"` | Hardcoded tokens such as bearer tokens, personal access tokens, or session tokens |
+
+After the reporting pass, a stricter version of the password pattern — `password.*=.*['\"][^$]` — is used to decide whether to abort the pipeline. The `[^$]` suffix excludes values that begin with `$`, which are environment variable references and are safe.
+
+## Patterns That Fail the Build
+
+Any Java source file (or file in any language under `src/`) that contains assignments matching the above patterns will cause the Security Scan stage to exit with a non-zero status, aborting the pipeline and marking the build as **FAILED**.
+
+```java
+// These will cause the pipeline to fail:
+String password = "mySecretPassword123";
+String apiKey = "sk_live_abc123xyz";
+String token = "ghp_xyz123abc";
+```
+
+The build log will contain:
+
+```
+ERROR: Hardcoded passwords detected in source code!
+Please use environment variables or secure credential storage.
+```
+
+## Correct Usage
+
+Replace every hardcoded literal secret with a call to `System.getenv()` or an equivalent environment-variable lookup for your framework:
+
+```java
+// Use environment variables instead:
+String password = System.getenv("DB_PASSWORD");
+String apiKey   = System.getenv("API_KEY");
+String token    = System.getenv("AUTH_TOKEN");
+```
+
+Because the grep pattern excludes values beginning with `$`, properties-file references that use the `${VAR}` syntax are also safe:
+
+```properties
+# These are safe in .properties files:
+db.password=${DB_PASSWORD_PROD}
+api.key=${API_KEY_PROD}
+```
+
+## Configuring Scan Behavior
+
+The `security` block in `build-config.yml` controls three scan-related behaviors:
+
+```yaml
+security:
+  password_scan: true      # Scan for hardcoded passwords
+  mask_credentials: true   # Mask credentials in logs
+  enforce_env_vars: true   # Enforce use of environment variables for secrets
+```
+
+| Key | Type | Effect |
+|-----|------|--------|
+| `security.password_scan` | boolean | When `true`, the Security Scan stage is active and will fail the build on detection |
+| `security.mask_credentials` | boolean | When `true`, credential values passed via `withCredentials()` are replaced with `****` in all build log output |
+| `security.enforce_env_vars` | boolean | When `true`, the pipeline enforces that secrets are sourced from environment variables rather than embedded in configuration files |
+
+## Credential Masking
+
+When `security.mask_credentials: true` is set, any secret bound through a Jenkins `withCredentials()` block is automatically masked in build logs. Jenkins replaces the literal value with `****` wherever it would appear in standard output or standard error.
+
+```groovy
+withCredentials([usernamePassword(
+    credentialsId: 'nexus-credentials',
+    usernameVariable: 'NEXUS_USER',
+    passwordVariable: 'NEXUS_PASS'
+)]) {
+    // NEXUS_PASS appears as **** in the build log
+    sh "mvn deploy -Dpassword=${NEXUS_PASS}"
+}
+```
+
+This masking is applied at the Jenkins agent level and cannot be disabled for credentials bound this way, regardless of the `mask_credentials` setting in `build-config.yml`.
+
+## Managing Secrets
+
+<Steps>
+  <Step title="Copy the secrets template">
+    ```bash
+    cp config/secrets.env.template config/secrets.env
+    ```
+    The template lists every expected variable name with placeholder values so you know exactly what to fill in.
+  </Step>
+  <Step title="Add real values to secrets.env">
+    Open `config/secrets.env` in your editor and replace placeholder values with real credentials. This file must **never** be committed to version control.
+
+    ```bash
+    # config/secrets.env  (never commit this file)
+    DB_PASSWORD_DEV=your-dev-password
+    API_KEY_DEV=your-dev-api-key
+    DB_PASSWORD_PROD=your-prod-password
+    ```
+  </Step>
+  <Step title="Store sensitive values as Jenkins Credentials">
+    In Jenkins navigate to **Manage Jenkins → Credentials → System → Global credentials** and add each secret:
+    - Use **Username with password** for service accounts (Nexus, WildFly, JBoss)
+    - Use **Secret text** for API tokens and single-value secrets
+    - Assign a memorable `credentialsId` that matches what the Jenkinsfile expects
+  </Step>
+  <Step title="Reference credentials in the Jenkinsfile with withCredentials()">
+    Bind the stored credentials into pipeline steps using `withCredentials()`:
+
+    ```groovy
+    // Username + password credential
+    withCredentials([usernamePassword(
+        credentialsId: 'nexus-credentials',
+        usernameVariable: 'NEXUS_USER',
+        passwordVariable: 'NEXUS_PASS'
+    )]) {
+        sh "mvn deploy -Dusername=${NEXUS_USER} -Dpassword=${NEXUS_PASS}"
+    }
+
+    // Secret text credential (single value)
+    withCredentials([string(
+        credentialsId: 'sonar-token',
+        variable: 'SONAR_TOKEN'
+    )]) {
+        sh "mvn sonar:sonar -Dsonar.login=${SONAR_TOKEN}"
+    }
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+  `config/secrets.env` is listed in `.gitignore` — **never remove it from the ignore rules**. If this file is accidentally committed, rotate all the secrets it contained immediately, then purge it from the repository history using `git filter-repo` or BFG Repo Cleaner before pushing again.
+</Warning>
+
+<Note>
+  For additional security hardening including enabling HTTPS on Jenkins and isolating services with Docker network policies, see the [Configuration Guide](/setup/configuration).
+</Note>

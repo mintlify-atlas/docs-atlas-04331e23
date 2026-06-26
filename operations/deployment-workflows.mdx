@@ -1,0 +1,219 @@
+---
+title: "Deployment Workflows: Git, ZIP, Manual, and Parameterized"
+sidebarTitle: "Deployment Workflows"
+description: "Four deployment workflows for Java apps: standard Git-based pipelines, ZIP source upload, manual docker cp deploys, and parameterized Jenkins jobs with environment selection."
+---
+
+The CI/CD stack supports four deployment workflows suited to different team setups and project requirements. Choose Git-based for standard CI/CD automation, ZIP-based for applications without direct Git access, manual for rapid local testing, or parameterized for environment-specific deployments that give you full control over where and how your application is deployed.
+
+## Workflow 1: Standard Git-Based Deployment
+
+The standard Git-based workflow is the recommended path for teams with a shared repository. Jenkins detects commits automatically and runs the full pipeline — from security scanning through to application server deployment — without any manual intervention.
+
+<Steps>
+  <Step title="Push code to Git">
+    Commit and push your changes to the repository:
+
+    ```bash
+    git add .
+    git commit -m "My changes"
+    git push origin main
+    ```
+  </Step>
+
+  <Step title="Jenkins detects the change">
+    Jenkins picks up the commit via a webhook trigger or SCM polling, and starts a new pipeline build automatically.
+
+    <Tip>
+      Set up a Git webhook pointing to `http://localhost:8080/github-webhook/` (or your Jenkins URL) for near-instant triggering on every push. Polling introduces a delay of up to the configured interval, which is typically one minute.
+    </Tip>
+  </Step>
+
+  <Step title="Pipeline executes all stages">
+    The pipeline runs the following stages in order:
+
+    1. **Read `build-config.yml`** — loads Java version, Maven version, build tool, and appserver target
+    2. **Checkout** — clones the latest source from SCM
+    3. **Security scan** — scans `src/` for hardcoded passwords, API keys, and tokens; fails the build if any are found
+    4. **Build** — runs `mvn clean install` with the environment flag and the generated `APP_VERSION`
+    5. **Test** — runs `mvn test` and publishes JUnit results
+    6. **SonarQube analysis** — uploads code quality metrics with `sonar:sonar`
+    7. **Quality Gate** — waits up to 5 minutes for SonarQube to pass the gate; aborts the pipeline if it fails
+    8. **Deploy to Nexus** — uploads the WAR artifact to `maven-snapshots` repository
+    9. **Deploy to WildFly/JBoss** — copies the WAR to the target application server's deployments directory
+  </Step>
+</Steps>
+
+---
+
+## Workflow 2: ZIP-Based Deployment
+
+Use the ZIP-based workflow for applications that live outside of Git — legacy codebases, third-party deliverables, or air-gapped environments. The `upload-source.sh` script handles everything from extraction to deployment.
+
+<Steps>
+  <Step title="Create a ZIP of your source code">
+    Package the source directory and Maven POM together:
+
+    ```bash
+    zip -r myapp-source.zip src/ pom.xml
+    ```
+  </Step>
+
+  <Step title="Upload and build with the script">
+    Run `upload-source.sh` with the ZIP file, target environment, and application server:
+
+    ```bash
+    ./upload-source.sh myapp-source.zip dev wildfly
+    ```
+
+    **Full usage:**
+
+    ```bash
+    ./upload-source.sh <path-to-zip> [environment] [target-server]
+    ```
+
+    | Argument | Required | Description |
+    |---|---|---|
+    | `path-to-zip` | Yes | Path to the ZIP file containing source code |
+    | `environment` | No | Target environment: `dev`, `staging`, or `prod` (default: `dev`) |
+    | `target-server` | No | Application server: `wildfly` or `jboss` (default: `wildfly`) |
+  </Step>
+
+  <Step title="What the script does internally">
+    Once invoked, `upload-source.sh` performs the following steps in order:
+
+    1. **Validates arguments** — checks that the ZIP file exists and that the environment and target server values are valid
+    2. **Extracts the ZIP** — unpacks to a temp directory via `unzip`
+    3. **Locates `pom.xml`** — searches for the project root using `find`
+    4. **Loads environment properties** — reads `config/environments/<env>/application.properties` and exports values as environment variables
+    5. **Scans for hardcoded passwords** — greps `src/` for literal password assignments; exits with an error if any are found
+    6. **Builds with Maven** — runs `mvn clean install` with the environment flag and a generated build version
+    7. **Runs tests** — executes `mvn test`; stops if tests fail
+    8. **Deploys the WAR** — copies the built WAR file to the running container via `docker cp`
+  </Step>
+</Steps>
+
+---
+
+## Workflow 3: Manual Maven Build
+
+For local testing or one-off deployments, you can build and deploy without Jenkins. This is the fastest way to verify a change on a running application server.
+
+<Steps>
+  <Step title="Build the project locally">
+    ```bash
+    cd examples/webapp-sample && mvn clean package
+    ```
+  </Step>
+
+  <Step title="Deploy to WildFly">
+    Copy the generated WAR directly into WildFly's hot-deploy directory:
+
+    ```bash
+    docker cp target/*.war wildfly:/opt/jboss/wildfly/standalone/deployments/
+    ```
+  </Step>
+
+  <Step title="Deploy to JBoss (alternative)">
+    Use the same `docker cp` pattern against the JBoss container:
+
+    ```bash
+    docker cp target/*.war jboss:/opt/jboss/wildfly/standalone/deployments/
+    ```
+  </Step>
+
+  <Step title="Access the deployed application">
+    WildFly monitors the deployments directory and hot-deploys the WAR automatically. Access it at:
+
+    ```
+    http://localhost:8090/webapp-sample-1.0.0-SNAPSHOT/
+    ```
+
+    For JBoss, substitute port `8070`.
+  </Step>
+</Steps>
+
+---
+
+## Workflow 4: Jenkins Pipeline with Parameters
+
+The parameterized pipeline gives you full control at build time — choose the environment, target server, and whether to skip tests or SonarQube analysis. This is the standard workflow for deployment to staging and production.
+
+<Steps>
+  <Step title="Create a parameterized pipeline job">
+    In Jenkins, create a new **Pipeline** job. Under **General**, check **This project is parameterized**.
+  </Step>
+
+  <Step title="Configure pipeline parameters">
+    Add the following parameters to match what `Jenkinsfile.enhanced` declares:
+
+    | Parameter | Type | Options / Default | Description |
+    |---|---|---|---|
+    | `ENVIRONMENT` | Choice | `dev`, `staging`, `prod` | Target deployment environment |
+    | `TARGET_SERVER` | Choice | `wildfly`, `jboss` | Target application server |
+    | `SKIP_TESTS` | Boolean | `false` | Skip running Maven tests |
+    | `SKIP_SONAR` | Boolean | `false` | Skip SonarQube analysis and Quality Gate |
+    | `FROM_ZIP` | Boolean | `false` | Build from an uploaded ZIP file instead of SCM |
+  </Step>
+
+  <Step title="Point the job to Jenkinsfile.enhanced">
+    Under **Pipeline → Definition**, select **Pipeline script from SCM**. Set the **Script Path** to `Jenkinsfile.enhanced` (or copy it to `Jenkinsfile` at the repository root).
+  </Step>
+
+  <Step title="Run with Build with Parameters">
+    Click **Build with Parameters** in the Jenkins job. Select the desired environment and server, adjust test/scan toggles as needed, then click **Build**. The pipeline will run only the stages that apply to your selections.
+  </Step>
+</Steps>
+
+---
+
+## Environment-Specific Properties
+
+The enhanced pipeline automatically loads configuration from the `config/environments/` directory based on the `ENVIRONMENT` parameter. This lets each environment carry its own database URLs, API endpoints, log levels, and other settings without changing any source code.
+
+At the **Load Environment Properties** stage, the pipeline reads:
+
+```text
+config/environments/${ENVIRONMENT}/application.properties
+```
+
+The full directory layout supports per-application overrides within each environment:
+
+```text
+config/environments/
+├── dev/
+│   ├── application.properties
+│   ├── database.properties
+│   └── settings.xml
+├── staging/
+│   ├── application.properties
+│   ├── database.properties
+│   └── settings.xml
+└── prod/
+    ├── application.properties
+    ├── database.properties
+    └── settings.xml
+```
+
+A sample `dev/application.properties` looks like:
+
+```properties
+app.name=myapp
+app.version=${APP_VERSION}
+app.environment=development
+
+# Database
+db.url=jdbc:postgresql://postgres:5432/devdb
+db.username=devuser
+db.password=${DB_PASSWORD_DEV}
+
+# External Services
+api.url=http://dev-api.example.com
+api.key=${API_KEY_DEV}
+```
+
+Secrets are never stored in these files — they are referenced as environment variables and injected at runtime via Jenkins credentials or Docker environment configuration.
+
+<Note>
+  For the full enhanced pipeline configuration, including all stage definitions and post-build steps, see [Jenkinsfile Enhanced](/pipeline/jenkinsfile-enhanced).
+</Note>

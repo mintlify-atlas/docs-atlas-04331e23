@@ -1,0 +1,178 @@
+---
+title: "CI/CD Stack Architecture and Service Topology"
+sidebarTitle: "Architecture"
+description: "How Jenkins, SonarQube, Nexus, WildFly, and JBoss are connected inside a private Docker bridge network with persistent volumes and health-checked startup."
+---
+
+The CI/CD Environment runs all six services — Jenkins, SonarQube, Nexus, WildFly, JBoss, and PostgreSQL — on a single Docker bridge network named `cicd-network`. Every service-to-service call travels over this internal network using Docker's built-in DNS, which resolves each container by its name (e.g., `http://sonarqube:9000`). Data is never stored inside containers; instead, named Docker volumes guarantee that jobs, analysis history, artifacts, and application deployments survive container restarts and upgrades. There is no TLS termination layer or reverse proxy — all ports are bound directly from the host to the container, making this topology optimised for local development and CI servers on a trusted network.
+
+## Network Topology Diagram
+
+The following diagram shows how the services are connected and how a Maven pipeline flows through the stack:
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│                    CI/CD Environment                     │
+│                   (Docker Network: cicd-network)         │
+├─────────────────────────────────────────────────────────┤
+│                                                           │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
+│  │   Jenkins    │  │  SonarQube   │  │    Nexus     │  │
+│  │   :8080      │  │   :9000      │  │    :8081     │  │
+│  │              │  │              │  │              │  │
+│  │ - Build      │  │ - Quality    │  │ - Artifacts  │  │
+│  │ - Test       │  │   Analysis   │  │   Storage    │  │
+│  │ - Deploy     │  │ - Security   │  │ - Repository │  │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  │
+│         │                 │                  │          │
+│         │                 │                  │          │
+│         │          ┌──────┴───────┐          │          │
+│         │          │  PostgreSQL  │          │          │
+│         │          │   (Internal) │          │          │
+│         │          │              │          │          │
+│         │          │ - Sonar DB   │          │          │
+│         │          └──────────────┘          │          │
+│         │                                     │          │
+│         └─────────────────┬──────────────────┘          │
+│                           │                              │
+│                    Maven Pipeline                        │
+│         mvn clean install → test → sonar → deploy       │
+└─────────────────────────────────────────────────────────┘
+
+Host Machine
+├── Port 8080  → Jenkins
+├── Port 9000  → SonarQube  
+└── Port 8081  → Nexus
+```
+
+## Services
+
+The table below lists every container, its host-to-container port mappings, default credentials, and role in the pipeline:
+
+| Service | Container Name | Ports (host:container) | Default Credentials | Purpose |
+|---|---|---|---|---|
+| Jenkins | `jenkins` | `8080:8080`, `50000:50000` | `admin` / `admin` | CI/CD orchestration — runs pipelines, manages jobs, executes build/test/deploy stages |
+| SonarQube | `sonarqube` | `9000:9000` | `admin` / `admin` | Code quality and security analysis — enforces quality gates on every build |
+| Nexus | `nexus` | `8081:8081` | `admin` / *(generated)* | Artifact repository — stores and versions Maven JARs, WARs, and configuration properties |
+| WildFly | `wildfly` | `8090:8080`, `9990:9990` | `admin` / `admin` | Jakarta EE 9+ application server — primary deployment target for built artifacts |
+| JBoss | `jboss` | `8070:8080`, `9970:9990` | `admin` / `admin` | Legacy WildFly 20-based server — used for migration testing and side-by-side comparison |
+| PostgreSQL | `postgres` | *(internal only)* | `sonar` / `sonar` | SonarQube's backing database — stores all analysis results, metrics, and project history |
+
+## Docker Volumes
+
+All persistent data lives in named Docker volumes managed by the Docker engine. These volumes survive `docker compose down` and are only removed when you run `docker compose down -v`. Each volume is mounted at the path most natural to its service:
+
+| Volume | Mounted In | Contents |
+|---|---|---|
+| `jenkins_home` | `jenkins` | All Jenkins jobs, build history, plugin data, credentials, and node configuration |
+| `postgres_data` | `postgres` | PostgreSQL data directory for the SonarQube database |
+| `sonarqube_data` | `sonarqube` | SonarQube analysis data, project snapshots, and metrics |
+| `sonarqube_extensions` | `sonarqube` | Third-party SonarQube plugins installed at runtime |
+| `sonarqube_logs` | `sonarqube` | SonarQube application and web server logs |
+| `nexus_data` | `nexus` | All Nexus repository content — Maven artifacts, blob stores, and configuration |
+| `wildfly_deployments` | `wildfly` | WildFly hot-deployment directory — drop a WAR here to deploy it |
+| `wildfly_data` | `wildfly` | WildFly standalone runtime data |
+| `wildfly_config` | `wildfly` | WildFly `standalone/configuration/` — `standalone.xml` and related files |
+| `jboss_deployments` | `jboss` | JBoss hot-deployment directory |
+| `jboss_data` | `jboss` | JBoss standalone runtime data |
+| `jboss_config` | `jboss` | JBoss `standalone/configuration/` — `standalone.xml` and related files |
+
+## Network
+
+All containers are attached to `cicd-network`, a Docker bridge network defined at the bottom of `docker-compose.yml`:
+
+```yaml
+networks:
+  cicd-network:
+    driver: bridge
+```
+
+Docker's embedded DNS server automatically resolves each container's name as a hostname within `cicd-network`. This means:
+
+- Jenkins calls SonarQube as `http://sonarqube:9000`
+- Jenkins calls Nexus as `http://nexus:8081`
+- SonarQube connects to PostgreSQL as `postgres:5432`
+- Maven pipelines use `http://nexus:8081/repository/maven-snapshots/` as the distribution URL
+
+Only the ports listed in the Services table above are exposed to the host machine. PostgreSQL is intentionally not published — it is reachable only from within `cicd-network`, which means it cannot be accessed from the Docker host directly.
+
+## Jenkins Auto-Configuration
+
+Jenkins is started with `-Djenkins.install.runSetupWizard=false`, which disables the interactive setup wizard. Instead, the `jenkins/init.groovy.d/` directory is mounted into the container at `/usr/share/jenkins/ref/init.groovy.d/`. Jenkins executes every Groovy script in this directory in lexicographic order on first boot:
+
+| Script | Action |
+|---|---|
+| `01-admin-user.groovy` | Creates the `admin` user with the default password and disables the signup page |
+| `02-install-plugins.groovy` | Installs the Git, Maven Integration, SonarQube Scanner, Nexus Artifact Uploader, and Pipeline plugin suites |
+| `03-configure-credentials.groovy` | Stores Nexus and SonarQube credentials in the Jenkins credential store so pipelines can reference them by ID |
+| `04-configure-sonarqube.groovy` | Registers the SonarQube server (`http://sonarqube:9000`) in Jenkins global configuration under the name `SonarQube` |
+| `05-configure-maven.groovy` | Adds a Maven installation named `Maven 3.9.2` in Jenkins global tool configuration, pointing at the pre-installed Maven binary |
+
+These scripts run exactly once. If you destroy `jenkins_home` and restart the container, they will run again and re-apply the same configuration.
+
+## Pipeline Data Flow
+
+A complete CI/CD cycle moves through the stack in the following sequence:
+
+```text
+1. Developer commits and pushes code
+        ↓
+2. Jenkins detects the change (webhook or SCM polling)
+        ↓
+3. Jenkins reads build-config.yml
+   (Java version, Maven version, SonarQube/Nexus settings)
+        ↓
+4. Checkout — Jenkins clones the source repository
+        ↓
+5. Build — mvn clean install
+        ↓
+6. Test — mvn test
+        ↓
+7. SonarQube Analysis — mvn sonar:sonar
+   (Results sent to http://sonarqube:9000)
+        ↓
+8. Quality Gate — Jenkins waits for SonarQube pass/fail decision
+        ↓
+9. Deploy to Nexus — mvn deploy
+   (Artifact uploaded to http://nexus:8081)
+        ↓
+10. Deploy to WildFly or JBoss
+    (WAR copied to standalone/deployments/ via docker cp or Maven plugin)
+        ↓
+11. Pipeline complete
+    - Build logs in Jenkins
+    - Quality report in SonarQube
+    - Versioned artifact in Nexus
+    - Application running on WildFly / JBoss
+```
+
+The `build-config.yml` file at the root of every project controls which stages are active, which Maven version is used, and where SonarQube and Nexus are located, keeping pipeline behaviour configurable without editing the `Jenkinsfile`:
+
+```yaml
+java_version: 17
+maven_version: 3.9.2
+
+build:
+  tool: maven
+  clean_install: true
+  skip_tests: false
+
+test:
+  enabled: true
+  command: mvn test
+
+sonarqube:
+  enabled: true
+  host_url: http://sonarqube:9000
+
+nexus:
+  enabled: true
+  url: http://nexus:8081
+  repository:
+    releases: maven-releases
+    snapshots: maven-snapshots
+```
+
+<Tip>
+  For a full walkthrough of the installation process, including system-level Docker configuration and post-install verification steps, see the [Installation Guide](/setup/installation).
+</Tip>

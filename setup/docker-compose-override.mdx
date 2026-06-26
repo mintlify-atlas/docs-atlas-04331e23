@@ -1,0 +1,265 @@
+---
+title: "Harden the Stack with docker-compose.override.yml"
+sidebarTitle: "Compose Override"
+description: "Use docker-compose.override.yml to pin image versions, increase JVM heap sizes, add CPU/memory limits, configure health checks, and tune PostgreSQL for production."
+---
+
+Docker Compose automatically detects and deep-merges `docker-compose.override.yml` with the base `docker-compose.yml` at startup — no flags required. This mechanism lets you layer production-specific settings on top of the base configuration without touching the base file, making it easy to keep upstream changes without merge conflicts. The repository ships a fully annotated template at `docker-compose.override.yml.example` that covers every hardening option described on this page.
+
+## Setup
+
+Copy the example file to activate it:
+
+```bash
+cp docker-compose.override.yml.example docker-compose.override.yml
+```
+
+Open `docker-compose.override.yml` in your editor and uncomment or adjust the sections you need. The file is gitignored by default, so local customisations stay off version control.
+
+---
+
+## Pinning Image Versions
+
+The base `docker-compose.yml` uses floating tags (`lts`, `community`, `latest`). For production, pin each image to a specific digest or version tag to prevent unintended upgrades during `docker compose pull`.
+
+```yaml
+services:
+  jenkins:
+    image: jenkins/jenkins:2.414.3-lts
+
+  sonarqube:
+    image: sonarqube:9.9.2-community
+
+  nexus:
+    image: sonatype/nexus3:3.60.0
+
+  postgres:
+    image: postgres:13.12
+```
+
+After pinning, run `docker compose pull` followed by `docker compose up -d` to replace running containers with the pinned images.
+
+---
+
+## JVM Heap Tuning
+
+The default JVM settings in `docker-compose.yml` are sized conservatively for development laptops. For production hosts with more memory, increase heap allocations through environment variable overrides.
+
+**Jenkins** — append heap flags to `JAVA_OPTS`:
+
+```yaml
+services:
+  jenkins:
+    environment:
+      - JAVA_OPTS=-Djenkins.install.runSetupWizard=false -Xmx4096m -Xms2048m
+```
+
+**SonarQube** — set separate opts for the web server and compute engine processes:
+
+```yaml
+services:
+  sonarqube:
+    environment:
+      - SONAR_WEB_JAVAOPTS=-Xmx2048m -Xms1024m
+      - SONAR_CE_JAVAOPTS=-Xmx2048m -Xms1024m
+```
+
+**Nexus** — override the full `INSTALL4J_ADD_VM_PARAMS` value:
+
+```yaml
+services:
+  nexus:
+    environment:
+      - INSTALL4J_ADD_VM_PARAMS=-Xms2048m -Xmx2048m -XX:MaxDirectMemorySize=2048m
+```
+
+<Note>
+  The sum of all container heap allocations must fit within the host's available
+  RAM. A fully tuned stack with the values above requires approximately 12 GB of
+  JVM heap alone, in addition to kernel, Docker daemon, and OS overhead. Adjust
+  values to match your host capacity.
+</Note>
+
+---
+
+## Resource Limits
+
+Docker Compose `deploy.resources` blocks cap the CPU and memory each container can consume. This prevents a single runaway service from starving the others.
+
+```yaml
+services:
+  jenkins:
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+  sonarqube:
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+  nexus:
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+  postgres:
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+```
+
+`limits` define the hard ceiling Docker enforces; the container is OOM-killed if it exceeds the memory limit. `reservations` are a soft guarantee — Docker will attempt to schedule the container on a node that has at least this much available.
+
+---
+
+## Health Checks
+
+Health checks let Docker track service readiness and automatically restart containers that stop responding. Without a `start_period`, Docker begins counting retries immediately, which causes false positives during the slow initial startup of JVM-based services.
+
+**Jenkins** — polls the root HTTP endpoint with `curl`:
+
+```yaml
+services:
+  jenkins:
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+```
+
+**SonarQube** — polls the system status API with `wget`:
+
+```yaml
+services:
+  sonarqube:
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9000/api/system/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+```
+
+**Nexus** — uses a longer start period to account for repository initialisation:
+
+```yaml
+services:
+  nexus:
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+```
+
+Once health checks are configured, `docker compose ps` shows a `(healthy)` or `(unhealthy)` status alongside each container, and `depends_on` conditions can reference `service_healthy` to order startup correctly.
+
+---
+
+## PostgreSQL Tuning
+
+Pass PostgreSQL server parameters directly via the `command` block in the override. This avoids the need for a custom `postgresql.conf` file:
+
+```yaml
+services:
+  postgres:
+    command:
+      - postgres
+      - -c
+      - max_connections=300
+      - -c
+      - shared_buffers=256MB
+```
+
+`max_connections=300` ensures SonarQube's connection pool has enough headroom under load. `shared_buffers=256MB` allocates a larger portion of RAM for PostgreSQL's internal page cache, reducing disk I/O for repeated queries.
+
+---
+
+## Bind-Mount Volumes for Production Data Persistence
+
+The base `docker-compose.yml` uses anonymous named volumes managed entirely by Docker. For production, bind-mount the volumes to explicit host paths so that data survives Docker engine upgrades, host reboots, and accidental `docker volume prune` runs.
+
+```yaml
+volumes:
+  jenkins_home:
+    driver: local
+    driver_opts:
+      type: none
+      device: /var/lib/jenkins_home    # Absolute path on the host
+      o: bind
+
+  postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /var/lib/postgresql/data  # Absolute path on the host
+      o: bind
+
+  nexus_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /var/lib/nexus-data       # Absolute path on the host
+      o: bind
+
+  sonarqube_data:
+    driver: local
+
+  sonarqube_extensions:
+    driver: local
+
+  sonarqube_logs:
+    driver: local
+```
+
+Create the host directories and set appropriate permissions before starting the stack:
+
+```bash
+sudo mkdir -p /var/lib/jenkins_home /var/lib/postgresql/data /var/lib/nexus-data
+sudo chown -R 1000:1000 /var/lib/jenkins_home
+sudo chown -R 999:999  /var/lib/postgresql/data
+sudo chown -R 200:200  /var/lib/nexus-data
+```
+
+---
+
+<Warning>
+  You must restart the full stack after creating or modifying
+  `docker-compose.override.yml` for the changes to take effect:
+
+  ```bash
+  docker compose down && docker compose up -d
+  ```
+
+  A plain `docker compose restart` does not re-read the Compose files and will
+  not apply environment variable or volume changes.
+</Warning>
+
+<Note>
+  `docker-compose.override.yml` is listed in `.gitignore` by default. This
+  means you can safely store production-specific values — including passwords
+  referenced via `${DB_PASSWORD}` — in the override file without risk of
+  accidentally committing them. For team environments, consider managing the
+  override file through a secrets manager or a separate private repository.
+</Note>

@@ -1,0 +1,167 @@
+---
+title: "Back Up and Restore the CI/CD Environment"
+sidebarTitle: "Backup & Restore"
+description: "backup-restore.sh creates timestamped archives of all service configurations, Jenkins jobs, Nexus config, SonarQube database, WildFly/JBoss configuration, and build files."
+---
+
+`backup-restore.sh` provides three operations — `backup`, `restore`, and `list` — to protect all service configurations, pipeline definitions, and databases across the full stack. Run it before upgrades, major configuration changes, migrations, or any destructive operation to ensure you have a clean recovery point.
+
+## What Gets Backed Up
+
+A single `backup` invocation captures the current state of every service in the stack:
+
+- **Environment configurations** — the entire `config/environments/` directory tree, including all `application.properties`, `database.properties`, and `settings.xml` files for `dev`, `staging`, and `prod`
+- **WildFly standalone configuration** — `/opt/jboss/wildfly/standalone/configuration` archived from within the running container
+- **JBoss standalone configuration** — `/opt/jboss/wildfly/standalone/configuration` archived from within the running JBoss container
+- **Jenkins jobs** — `/var/jenkins_home/jobs` including all pipeline definitions and build history
+- **Jenkins credentials** — `credentials.xml` and the `secrets` directory for stored credentials and encryption keys
+- **Nexus configuration** — `/nexus-data/etc` containing repository and security configuration
+- **SonarQube database** — a full PostgreSQL dump of the `sonarqube` database produced by `pg_dump`
+- **Build configuration files** — `build-config.yml`, `docker-compose.yml`, and all `Jenkinsfile*` variants
+
+A `manifest.txt` is generated inside each backup directory recording the timestamp, hostname, user, and a snapshot of running container statuses at backup time.
+
+---
+
+## Commands
+
+### Create a backup
+
+```bash
+./backup-restore.sh backup
+```
+
+The script creates a timestamped subdirectory under `./backups/`, copies all component data into it, then compresses the entire directory into a single tarball. On completion it prints the backup file path and its size:
+
+```text
+=== Backup Complete ===
+Backup file: ./backups/backup-20251025_143022.tar.gz
+Backup size: 45M
+```
+
+### List backups
+
+```bash
+./backup-restore.sh list
+```
+
+Example output:
+
+```text
+=== Available Backups ===
+
+Timestamp          | Size    | Date
+-------------------+---------+-------------------------
+20251025_143022    | 45M     | 2025-10-25 14:30:22
+20251024_120000    | 42M     | 2025-10-24 12:00:00
+```
+
+### Restore from a backup
+
+```bash
+./backup-restore.sh restore 20251025_143022
+```
+
+After the restore completes, restart all services to pick up the recovered configuration:
+
+```bash
+docker compose restart
+```
+
+---
+
+## Backup Location
+
+Backups are written to:
+
+```text
+./backups/backup-TIMESTAMP.tar.gz
+```
+
+The timestamp format is `YYYYMMDD_HHMMSS` (e.g., `20251025_143022`). Each tarball contains the full backup directory at that timestamp, including the `manifest.txt` and all component archives.
+
+---
+
+## Recommended Schedule
+
+Automate backups with cron to match the risk profile of each environment:
+
+| Environment | Frequency | Cron Schedule |
+|---|---|---|
+| Development | Daily | `0 2 * * * cd /path/to/CICD && ./backup-restore.sh backup` |
+| Staging | Weekly | `0 2 * * 0 cd /path/to/CICD && ./backup-restore.sh backup` |
+| Production | Before each deployment | Run manually before every deployment |
+
+Example cron entry for a daily development backup at 2 AM:
+
+```bash
+# Daily backup at 2 AM
+0 2 * * * cd /path/to/CICD && ./backup-restore.sh backup
+```
+
+---
+
+## Restoring a Backup
+
+<Steps>
+  <Step title="List available backups">
+    Find the timestamp of the backup you want to restore from:
+
+    ```bash
+    ./backup-restore.sh list
+    ```
+  </Step>
+
+  <Step title="Stop services (optional)">
+    For a clean restore, stop the stack before overwriting configuration:
+
+    ```bash
+    docker compose down
+    ```
+
+    You can skip this step if you prefer an in-place restore, but restarting services afterward is still required.
+  </Step>
+
+  <Step title="Run the restore">
+    Pass the timestamp from the listing as the second argument:
+
+    ```bash
+    ./backup-restore.sh restore <timestamp>
+    ```
+
+    For example:
+
+    ```bash
+    ./backup-restore.sh restore 20251025_143022
+    ```
+  </Step>
+
+  <Step title="Restart all services">
+    Apply the restored configuration by restarting the full stack:
+
+    ```bash
+    docker compose restart
+    ```
+  </Step>
+</Steps>
+
+---
+
+## What the Script Does During Restore
+
+The restore process works component-by-component, skipping any component whose backup file is absent or whose container is not currently running:
+
+- **Environment configurations** — copied from the backup directory back to `config/environments/` using `cp -r`
+- **Build configuration** — `build-config.yml` is copied back to the project root
+- **WildFly configuration** — the `wildfly-config.tar.gz` archive is copied into the running container via `docker cp`, then extracted with `tar xzf` and the container is restarted with `docker restart wildfly`
+- **JBoss configuration** — same process as WildFly using the `jboss-config.tar.gz` archive and `docker restart jboss`
+- **Jenkins jobs and credentials** — `jenkins-jobs.tar.gz` and `jenkins-credentials.tar.gz` are copied into the Jenkins container, extracted with `tar xzf`, and the container is restarted with `docker restart jenkins`
+- **SonarQube database** — `sonarqube.sql` is fed into PostgreSQL via `psql -U sonar sonarqube`, and the SonarQube container is restarted with `docker restart sonarqube`
+
+<Warning>
+  Restore overwrites the current configuration of every restored component. If you want to keep the current state as a fallback, run `./backup-restore.sh backup` before restoring an older snapshot.
+</Warning>
+
+<Tip>
+  Store backup tarballs in an external location — such as S3, a NAS, or an off-site file server — immediately after creation. Local backups only protect against configuration drift, not against host failures or volume loss.
+</Tip>

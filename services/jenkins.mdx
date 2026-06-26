@@ -1,0 +1,292 @@
+---
+title: "Jenkins: CI/CD Orchestration Service Configuration"
+sidebarTitle: "Jenkins"
+description: "Jenkins runs on port 8080 and is auto-configured with plugins, Maven 3.9.2, SonarQube integration, and Nexus credentials via init.groovy.d scripts on first boot."
+---
+
+Jenkins is the CI/CD orchestration engine at the heart of this stack. It auto-configures on first boot using Groovy scripts placed in `jenkins/init.groovy.d/` — no setup wizard, no manual plugin installation, and no credential entry required. By the time Jenkins is accessible on port 8080, the admin user, essential plugins, Maven tool, SonarQube server connection, and Nexus credentials are all ready to use.
+
+## Quick Reference
+
+| Property | Value |
+|---|---|
+| Web Port | `8080` |
+| Agent Port | `50000` |
+| Image | `jenkins/jenkins:lts` |
+| Container Name | `jenkins` |
+| Default Credentials | `admin` / `admin` |
+| Data Volume | `jenkins_home` |
+
+## Auto-Configuration Scripts
+
+Jenkins executes every `.groovy` file found in `/usr/share/jenkins/ref/init.groovy.d/` on first startup, which maps to `./jenkins/init.groovy.d/` in the project directory. The six scripts run in filename order and handle the complete initial configuration.
+
+<Steps>
+
+### `01-admin-user.groovy` — Create the Admin User
+
+Creates the `admin` account, sets up `HudsonPrivateSecurityRealm`, and applies `FullControlOnceLoggedInAuthorizationStrategy` so that authenticated users have full access while anonymous access is disabled.
+
+```groovy
+import jenkins.model.*
+import hudson.security.*
+
+def instance = Jenkins.getInstance()
+
+def hudsonRealm = new HudsonPrivateSecurityRealm(false)
+hudsonRealm.createAccount("admin", "admin")
+instance.setSecurityRealm(hudsonRealm)
+
+def strategy = new FullControlOnceLoggedInAuthorizationStrategy()
+strategy.setAllowAnonymousRead(false)
+instance.setAuthorizationStrategy(strategy)
+
+instance.save()
+
+println "Admin user created with username: admin, password: admin"
+```
+
+### `02-install-plugins.groovy` — Install Essential Plugins
+
+Iterates the plugin list and deploys any plugin not already installed, then signals Jenkins to restart if required.
+
+```groovy
+def plugins = [
+    "git",
+    "workflow-aggregator",
+    "pipeline-maven",
+    "maven-plugin",
+    "sonar",
+    "nexus-artifact-uploader",
+    "credentials",
+    "credentials-binding",
+    "config-file-provider",
+    "docker-workflow",
+    "pipeline-utility-steps"
+]
+```
+
+### `03-configure-credentials.groovy` — Set Up Nexus and SonarQube Credentials
+
+Adds two global credentials to the Jenkins credential store:
+
+- **`sonarqube-token`** — A `StringCredentialsImpl` (secret text) holding the SonarQube authentication token, defaulting to `admin`.
+- **`nexus-credentials`** — A `UsernamePasswordCredentialsImpl` for Nexus, defaulting to `admin` / `admin123`.
+
+Both credentials are created only if they do not already exist, making the script safe to re-run.
+
+### `04-configure-sonarqube.groovy` — Register the SonarQube Server
+
+Calls `SonarGlobalConfiguration` to register a SonarQube installation named **`SonarQube`** pointing to `http://sonarqube:9000` and authenticated with the `sonarqube-token` credential created in the previous step.
+
+```groovy
+def sonarInstallation = new SonarInstallation(
+    "SonarQube",
+    "http://sonarqube:9000",
+    "sonarqube-token",
+    null, null, null, null, null
+)
+sonarConfig.setInstallations(sonarInstallation)
+sonarConfig.save()
+```
+
+### `05-configure-maven.groovy` — Install Maven 3.9.2 as a Jenkins Tool
+
+Registers Maven 3.9.2 as a managed tool installation named **`Maven 3.9.2`** so that Jenkinsfile `tools { maven 'Maven 3.9.2' }` declarations resolve correctly.
+
+```groovy
+def mavenInstaller = new Maven.MavenInstaller("3.9.2")
+def installSourceProperty = new InstallSourceProperty([mavenInstaller])
+
+def maven = new Maven.MavenInstallation(
+    "Maven 3.9.2",
+    null,
+    [installSourceProperty]
+)
+
+mavenDesc.setInstallations(maven)
+mavenDesc.save()
+```
+
+### `06-configure-appserver-credentials.groovy` — Register WildFly and JBoss Credentials
+
+Adds `wildfly-credentials` and `jboss-credentials` as global `UsernamePasswordCredentialsImpl` entries (both default to `admin`/`admin`). The enhanced Jenkinsfile references these when executing deployments to the respective application servers.
+
+</Steps>
+
+## Customizing Jenkins
+
+### Changing Admin Credentials
+
+Edit `jenkins/init.groovy.d/01-admin-user.groovy` and replace the hardcoded values before first boot. If the stack has already started, bring it down, remove the `jenkins_home` volume, update the script, and restart.
+
+```groovy
+hudsonRealm.createAccount("your-username", "your-secure-password")
+```
+
+<Warning>
+Change the default `admin`/`admin` credentials before exposing Jenkins on any non-localhost interface. Credentials are baked in at first-boot initialization and are not automatically rotated.
+</Warning>
+
+### Adding More Plugins
+
+Extend the `plugins` list in `jenkins/init.groovy.d/02-install-plugins.groovy`. The script skips plugins that are already installed, so it is safe to add entries incrementally.
+
+```groovy
+def plugins = [
+    "git",
+    "workflow-aggregator",
+    "pipeline-maven",
+    "maven-plugin",
+    "sonar",
+    "nexus-artifact-uploader",
+    "credentials",
+    "credentials-binding",
+    "config-file-provider",
+    "docker-workflow",
+    "pipeline-utility-steps",
+    // Add additional plugins below:
+    "slack",
+    "email-ext",
+    "docker-plugin"
+]
+```
+
+<Tip>
+Find plugin short names in the Jenkins Plugin Index at `https://plugins.jenkins.io/`. The short name is the value that goes in the list, not the display name.
+</Tip>
+
+### Adding JDK Installations
+
+Create a new file `jenkins/init.groovy.d/06-configure-jdk.groovy` (or `07-` if `06-` is taken) to register a JDK as a managed tool:
+
+```groovy
+import jenkins.model.Jenkins
+import hudson.model.JDK
+import hudson.tools.InstallSourceProperty
+
+def instance = Jenkins.getInstance()
+def jdkDesc = instance.getDescriptor("hudson.model.JDK")
+
+def jdkInstaller = new JDK.DescriptorImpl.FileOnMasterInstaller(
+    "/usr/lib/jvm/java-17-openjdk-amd64"
+)
+def installSourceProperty = new InstallSourceProperty([jdkInstaller])
+
+def jdk = new JDK(
+    "JDK 17",
+    "/usr/lib/jvm/java-17-openjdk-amd64",
+    [installSourceProperty]
+)
+
+jdkDesc.setInstallations(jdk)
+jdkDesc.save()
+
+println "JDK configured"
+```
+
+Once registered, Jenkinsfiles can declare `tools { jdk 'JDK 17' }` and the pipeline resolves the correct JAVA_HOME automatically.
+
+## Docker Socket Access
+
+The Jenkins container runs as `root` and mounts the host Docker socket:
+
+```yaml
+user: root
+volumes:
+  - /var/run/docker.sock:/var/run/docker.sock
+```
+
+This lets pipeline steps issue Docker commands directly — for example, the enhanced Jenkinsfile uses `docker cp` to push WAR files into running WildFly and JBoss containers without needing a Docker-in-Docker sidecar.
+
+```groovy
+sh "docker cp ${warFile} ${serverName}:/opt/jboss/wildfly/standalone/deployments/"
+```
+
+<Warning>
+Mounting the Docker socket grants the Jenkins process the ability to control the host Docker daemon. In production, restrict this using Docker socket proxies (e.g., `docker-socket-proxy`) or migrate to a Kubernetes-based agent strategy.
+</Warning>
+
+## Scaling Jenkins
+
+The agent port `50000` is exposed so that external Jenkins agents (nodes) can connect via the JNLP protocol. To add an agent:
+
+1. In Jenkins, go to **Manage Jenkins → Nodes → New Node**.
+2. Select **Permanent Agent** and configure the node labels (e.g., `linux`, `maven`, `docker`).
+3. Start the agent container or process pointing to `http://jenkins:50000`.
+4. Use `agent { label 'your-label' }` in Jenkinsfiles to route stages to specific agents.
+
+For heavier workloads, consider using the **Docker Plugin** or **Kubernetes Plugin** to provision ephemeral agents on demand rather than keeping permanent nodes running.
+
+## Troubleshooting
+
+<Accordion title="Jenkins won't start — container exits immediately or port 8080 is unreachable">
+1. Check whether port 8080 is already bound on the host:
+   ```bash
+   sudo lsof -i :8080
+   # or
+   sudo netstat -tulpn | grep 8080
+   ```
+2. Inspect container logs:
+   ```bash
+   docker compose logs jenkins
+   ```
+3. If Jenkins is running out of memory, increase the heap in `docker-compose.yml`:
+   ```yaml
+   environment:
+     - JAVA_OPTS=-Djenkins.install.runSetupWizard=false -Xmx4096m -Xms2048m
+   ```
+4. As a last resort, remove the volume and start fresh:
+   ```bash
+   docker compose down
+   docker volume rm cicd_jenkins_home
+   docker compose up -d
+   ```
+</Accordion>
+
+<Accordion title="Plugins not installing — listed plugins are missing after startup">
+1. Wait 2–3 minutes for Jenkins to fully initialize before checking. Plugin installation is asynchronous.
+2. Review the init script output in the container logs:
+   ```bash
+   docker compose logs jenkins | grep -i plugin
+   ```
+3. Verify that Jenkins can reach the update center:
+   ```bash
+   docker exec jenkins curl -I https://updates.jenkins.io/
+   ```
+4. As a fallback, install plugins manually via **Manage Jenkins → Manage Plugins → Available**.
+</Accordion>
+
+<Accordion title="Setup wizard appears despite configuration">
+The setup wizard means the `JAVA_OPTS` flag was not passed correctly. Verify your `docker-compose.yml` has:
+
+```yaml
+environment:
+  - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+```
+
+Ensure there are no typos and that the `-D` flag is prefixed correctly. After fixing, bring the stack down and back up:
+
+```bash
+docker compose down && docker compose up -d
+```
+</Accordion>
+
+<Accordion title="Can't reach SonarQube or Nexus from within a pipeline">
+1. Confirm all services are on the same Docker network:
+   ```bash
+   docker network inspect cicd-network
+   ```
+2. Test connectivity directly from the Jenkins container:
+   ```bash
+   docker exec jenkins curl -I http://sonarqube:9000
+   docker exec jenkins curl -I http://nexus:8081
+   ```
+3. SonarQube takes 2–3 minutes to initialize after the container reports healthy. Retry after waiting.
+4. If the network is missing, recreate it:
+   ```bash
+   docker compose down
+   docker network rm cicd-network
+   docker compose up -d
+   ```
+</Accordion>

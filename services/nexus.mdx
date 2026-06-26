@@ -1,0 +1,211 @@
+---
+title: "Nexus Repository Manager: Artifact Storage and Distribution"
+sidebarTitle: "Nexus"
+description: "Nexus Repository Manager runs on port 8081 and provides Maven release and snapshot repositories for storing build artifacts and versioned configuration properties."
+---
+
+Nexus Repository Manager is the artifact hub for the CI/CD stack. It stores all build outputs — WAR files, JARs, and versioned configuration property tarballs. The Jenkins pipeline deploys artifacts to the `maven-snapshots` repository at the end of a successful pipeline run, immediately after the SonarQube Quality Gate passes. Every deployed artifact is versioned with a build number and timestamp, giving you a complete history of every build stored in one place.
+
+## Quick Reference
+
+| Property | Value |
+|---|---|
+| Port | `8081` |
+| Image | `sonatype/nexus3` |
+| Container Name | `nexus` |
+| Default Credentials | `admin` / `[generated password]` |
+| Data Volume | `nexus_data` |
+
+## Getting the Admin Password
+
+<Note>
+Nexus generates a random admin password on first start and writes it to `/nexus-data/admin.password` inside the container. Retrieve it with:
+
+```bash
+docker exec nexus cat /nexus-data/admin.password
+```
+
+**This file is automatically deleted after you complete the first-login setup wizard and change the password.** If the file is already gone, the password was changed during a previous login — check your records or reset (see Troubleshooting).
+</Note>
+
+## Default Repositories
+
+Nexus ships with a default set of repositories. The pipeline uses two hosted Maven repositories:
+
+<CardGroup cols={2}>
+  <Card title="maven-releases" icon="tag">
+    Stores release-version artifacts (e.g., `1.0.0`). Redeploy policy is typically set to **Disable** to prevent accidental overwrites of released artifacts.
+  </Card>
+  <Card title="maven-snapshots" icon="rotate">
+    Stores snapshot-version artifacts (e.g., `1.0.0-SNAPSHOT`). Redeploy is **allowed**, which is required for the `mvn deploy` step to succeed on repeated pipeline runs.
+  </Card>
+</CardGroup>
+
+If the repositories are not present after first startup, create them manually:
+
+<Steps>
+### Log in to Nexus
+Navigate to `http://localhost:8081` and sign in with the admin credentials retrieved above.
+
+### Open Repository Administration
+Click the **gear icon** (Server administration and configuration) in the top navigation bar.
+
+### Create Each Repository
+Click **Repositories → Create repository**, then select **maven2 (hosted)**.
+
+- For releases: set **Name** to `maven-releases` and **Version policy** to `Release`.
+- For snapshots: set **Name** to `maven-snapshots`, **Version policy** to `Snapshot`, and **Deployment policy** to `Allow redeploy`.
+</Steps>
+
+## Pipeline Integration
+
+The Jenkinsfile `Deploy to Nexus` stage uses `mvn deploy` with an alternate deployment repository pointing to the `maven-snapshots` hosted repository. Credentials are injected from the `nexus-credentials` Jenkins credential configured by `03-configure-credentials.groovy`.
+
+```groovy
+stage('Deploy to Nexus') {
+    when {
+        anyOf {
+            branch 'main'
+            branch 'master'
+            branch 'develop'
+        }
+    }
+    steps {
+        withCredentials([usernamePassword(
+            credentialsId: 'nexus-credentials',
+            usernameVariable: 'NEXUS_USER',
+            passwordVariable: 'NEXUS_PASS'
+        )]) {
+            sh """
+                mvn deploy -DskipTests \
+                -DaltDeploymentRepository=nexus::default::${NEXUS_URL}/repository/maven-snapshots
+            """
+        }
+    }
+}
+```
+
+The deploy stage only runs on `main`, `master`, or `develop` branches, preventing snapshot uploads from feature branches.
+
+## Properties Version Storage
+
+The enhanced Jenkinsfile (`Jenkinsfile.enhanced`) also uploads versioned environment configuration tarballs to Nexus via `curl`. This lets you retrieve the exact configuration properties that were active at the time of any build:
+
+```bash
+curl -v -u ${NEXUS_USER}:${NEXUS_PASS} \
+    --upload-file properties-${ENVIRONMENT}-${APP_VERSION}.tar.gz \
+    ${NEXUS_URL}/repository/maven-snapshots/properties/${JOB_NAME}/${APP_VERSION}/properties-${ENVIRONMENT}-${APP_VERSION}.tar.gz
+```
+
+The version format is `{BUILD_NUMBER}-{TIMESTAMP}` (e.g., `42-20251025-143022`), making it easy to correlate a deployed WAR with its corresponding properties bundle.
+
+## Maven settings.xml Configuration
+
+For `mvn deploy` to authenticate against Nexus, Maven must resolve the server credentials from `settings.xml`. The `<server>` block ID must match the `<id>` used in your `pom.xml` `<distributionManagement>` section.
+
+```xml
+<settings>
+  <servers>
+    <server>
+      <id>nexus-snapshots</id>
+      <username>admin</username>
+      <password>${env.NEXUS_PASS}</password>
+    </server>
+    <server>
+      <id>nexus-releases</id>
+      <username>admin</username>
+      <password>${env.NEXUS_PASS}</password>
+    </server>
+  </servers>
+</settings>
+```
+
+<Tip>
+Use the Jenkins `Config File Provider` plugin to manage `settings.xml` centrally in Jenkins rather than baking it into each project. The pipeline can then inject it with `withMaven(mavenSettingsConfig: 'nexus-settings')`.
+</Tip>
+
+## Memory Tuning
+
+Nexus runs on a Java-based application server and requires adequate heap allocation. The default settings in `docker-compose.yml` are suitable for development:
+
+```yaml
+nexus:
+  environment:
+    - INSTALL4J_ADD_VM_PARAMS=-Xms512m -Xmx512m -XX:MaxDirectMemorySize=273m
+```
+
+For production workloads with many concurrent users or large repositories, significantly increase the heap. The override example shows recommended production values:
+
+```yaml
+nexus:
+  environment:
+    - INSTALL4J_ADD_VM_PARAMS=-Xms2048m -Xmx2048m -XX:MaxDirectMemorySize=2048m
+```
+
+<Warning>
+Nexus performs best when `-Xms` and `-Xmx` are equal, preventing JVM heap resize operations under load. Always pair them at the same value in production.
+</Warning>
+
+## Troubleshooting
+
+<Accordion title="Nexus takes too long to start — still not accessible after 5+ minutes">
+Nexus initialization can take 5–10 minutes on first boot, especially on machines with limited I/O throughput. Check current status:
+
+```bash
+docker compose logs nexus | tail -50
+docker stats nexus
+```
+
+If memory is insufficient, reduce the heap temporarily while diagnosing:
+
+```yaml
+nexus:
+  environment:
+    - INSTALL4J_ADD_VM_PARAMS=-Xms256m -Xmx512m -XX:MaxDirectMemorySize=273m
+```
+
+Restart after adjusting:
+
+```bash
+docker compose restart nexus
+```
+</Accordion>
+
+<Accordion title="Can't get the admin password — admin.password file not found">
+1. The file may not exist yet — Nexus may still be initializing. Wait 5–10 minutes, then retry:
+   ```bash
+   docker exec nexus ls -la /nexus-data/admin.password
+   ```
+2. If the file is truly missing, it was already deleted after a previous first-login. Check pipeline logs or team records for the password that was set.
+3. If no one has the password, the classic fallback is to try `admin123` — this was the default for older Nexus versions and occasionally applies:
+   ```bash
+   # Attempt login with the legacy default
+   curl -u admin:admin123 http://localhost:8081/service/rest/v1/status
+   ```
+4. As a last resort, reset the entire Nexus volume (this loses all stored artifacts):
+   ```bash
+   docker compose down -v
+   docker compose up -d
+   ```
+</Accordion>
+
+<Accordion title="Maven deploy fails with 401 Unauthorized">
+1. Confirm the credentials stored in the `nexus-credentials` Jenkins credential match the actual Nexus admin password.
+2. Verify that the `<server>` `<id>` in `settings.xml` exactly matches the `<id>` in `pom.xml` `<distributionManagement>` — they are case-sensitive.
+3. Log in to the Nexus UI and confirm the `maven-snapshots` repository **Deployment policy** is set to **Allow redeploy**:
+   - Navigate to **Repositories → maven-snapshots → Edit**.
+   - Under **Hosted**, set **Deployment policy** to `Allow redeploy`.
+4. Verify that the Nexus user account has the `nx-repository-write-*` privilege or is assigned the `nx-admin` role.
+</Accordion>
+
+<Accordion title="Repositories not created — maven-releases or maven-snapshots missing">
+Nexus does not auto-create these repositories from the base image. If they are missing, create them manually via the UI:
+
+1. Log in to `http://localhost:8081` with admin credentials.
+2. Click the **gear icon → Repositories → Create repository**.
+3. Select **maven2 (hosted)**.
+4. Create `maven-releases` with **Version policy: Release**.
+5. Create `maven-snapshots` with **Version policy: Snapshot** and **Deployment policy: Allow redeploy**.
+
+Alternatively, automate repository creation using the Nexus REST API or a provisioning Groovy script placed in `nexus/nexus-config.groovy`.
+</Accordion>

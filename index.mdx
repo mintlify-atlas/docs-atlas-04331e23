@@ -1,20 +1,92 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "Jenkins CI/CD Environment"
+sidebarTitle: "Home"
+description: "A complete Docker-based CI/CD environment with Jenkins, SonarQube, Nexus, WildFly, and JBoss. Provision everything with a single command."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+The Jenkins CI/CD Environment is a fully containerized automation stack for Java application teams. It provisions Jenkins, SonarQube, Nexus Repository Manager, WildFly, and JBoss EAP in a single Docker Compose stack — with zero manual configuration required after `./setup.sh`.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Provision the full stack and run your first pipeline in under 10 minutes.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Understand how Jenkins, SonarQube, Nexus, and the app servers connect.
+  </Card>
+  <Card title="Pipeline Guide" icon="code-branch" href="/pipeline/build-config">
+    Configure build-config.yml and craft your Jenkinsfile pipeline stages.
+  </Card>
+  <Card title="Operations" icon="wrench" href="/operations/deployment-workflows">
+    Deployment workflows, backup/restore, versioning, and migration guides.
+  </Card>
+</CardGroup>
+
+## What's Included
+
+The environment ships six containerized services wired together on a private bridge network:
+
+<CardGroup cols={3}>
+  <Card title="Jenkins" icon="gears" href="/services/jenkins">
+    CI/CD orchestration — auto-configured with plugins, Maven, SonarQube integration, and Nexus credentials.
+  </Card>
+  <Card title="SonarQube" icon="shield-check" href="/services/sonarqube">
+    Code quality and security analysis backed by PostgreSQL. Quality gates block bad builds automatically.
+  </Card>
+  <Card title="Nexus" icon="box-archive" href="/services/nexus">
+    Maven release and snapshot repositories for artifact storage and versioned dependency management.
+  </Card>
+  <Card title="WildFly" icon="server" href="/services/wildfly-jboss">
+    Modern Jakarta EE 9+ application server for new deployments. Hot deployment and management console included.
+  </Card>
+  <Card title="JBoss EAP" icon="database" href="/services/wildfly-jboss">
+    Legacy application server running side-by-side with WildFly for migration testing and gradual cutover.
+  </Card>
+  <Card title="PostgreSQL" icon="circle-nodes" href="/services/sonarqube">
+    Internal database powering SonarQube. Persistent across restarts via a named Docker volume.
+  </Card>
+</CardGroup>
+
+## Getting Started
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/infra-neo/CICD.git
+    cd CICD
+    ```
+  </Step>
+  <Step title="Run the setup script">
+    ```bash
+    ./setup.sh
+    ```
+    The script starts all containers, waits for every service to be healthy, configures WildFly and JBoss admin users, and prints the access URLs.
+  </Step>
+  <Step title="Access your services">
+    | Service | URL | Credentials |
+    |---|---|---|
+    | Jenkins | http://localhost:8080 | admin / admin |
+    | SonarQube | http://localhost:9000 | admin / admin |
+    | Nexus | http://localhost:8081 | admin / *see below* |
+    | WildFly | http://localhost:8090 | admin / admin |
+    | JBoss | http://localhost:8070 | admin / admin |
+
+    Retrieve the generated Nexus password: `docker exec nexus cat /nexus-data/admin.password`
+  </Step>
+  <Step title="Create your first pipeline">
+    Add a `build-config.yml` and a `Jenkinsfile` to your project, point a Jenkins Pipeline job at your Git repository, and click **Build Now**.
+  </Step>
+</Steps>
+
+## Key Capabilities
+
+- **One-command setup** — `./setup.sh` provisions everything; no manual wizard
+- **Auto-configured Jenkins** — `init.groovy.d` scripts install plugins, set credentials, and connect SonarQube and Nexus on first boot
+- **Security scanning** — pipelines fail automatically when hardcoded passwords are detected in source code
+- **Multi-environment support** — isolated `dev`, `staging`, and `prod` property sets with per-environment Maven repositories
+- **ZIP-based builds** — `./upload-source.sh` builds and deploys from a source ZIP without requiring a Git repository
+- **Backup and restore** — `./backup-restore.sh` snapshots all service data into timestamped archives
+- **JBoss → WildFly migration** — run both servers in parallel for side-by-side testing and gradual traffic cutover
 
 <Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
+  New to this stack? Follow the [Quickstart](/quickstart) to have a working CI/CD pipeline running in under 10 minutes.
 </Tip>
-
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>

@@ -1,0 +1,500 @@
+---
+title: "Troubleshooting Common CI/CD Stack Issues"
+sidebarTitle: "Troubleshooting"
+description: "Diagnose and fix common issues with Jenkins, SonarQube, Nexus, WildFly, JBoss, Docker networking, and Maven build failures in the CI/CD environment."
+---
+
+This guide covers the most common issues encountered when running the CI/CD stack. Start with the **Quick Diagnostics** commands below to gather information, then find your specific issue in the relevant section. If nothing here resolves your problem, see the [Complete Reset](#complete-reset) section at the bottom.
+
+## Quick Diagnostics
+
+Run these commands first to get an overview of the stack's current state:
+
+```bash
+docker ps                            # check running containers
+docker compose logs --tail=50        # recent logs from all services
+docker stats --no-stream             # CPU/memory usage snapshot
+docker network inspect cicd-network  # network connectivity
+```
+
+## Common Error Reference
+
+| Error | Cause | Solution |
+|-------|-------|---------|
+| `Address already in use` | Port conflict on the host | Change the host port in `docker-compose.yml` |
+| `Cannot connect to Docker daemon` | Docker service not running | Start the Docker service |
+| `No space left on device` | Host disk is full | Run `docker system prune` |
+| `OOMKilled` | Container ran out of memory | Increase Docker's memory limit |
+| `Network not found` | Docker network was deleted | `docker compose down && docker compose up -d` |
+| `Permission denied` | Script not executable | `chmod +x setup.sh` |
+
+---
+
+## Jenkins Issues
+
+<Accordion title="Jenkins won't start">
+**Symptoms:** Container exits immediately, or `http://localhost:8080` is unreachable.
+
+**1. Check whether port 8080 is already in use:**
+```bash
+sudo lsof -i :8080
+# or
+sudo netstat -tulpn | grep 8080
+```
+
+**2. Check Jenkins startup logs:**
+```bash
+docker compose logs jenkins
+```
+
+**3. Increase JVM memory in `docker-compose.yml`:**
+```yaml
+environment:
+  - JAVA_OPTS=-Djenkins.install.runSetupWizard=false -Xmx2048m
+```
+
+**4. Reset the Jenkins volume and restart:**
+```bash
+docker compose down
+docker volume rm cicd_jenkins_home
+docker compose up -d
+```
+</Accordion>
+
+<Accordion title="Plugins not installing">
+**Symptoms:** Plugins listed in the init script are missing, or Jenkins shows plugin installation errors.
+
+**1. Wait for full initialization** — Jenkins can take 2–3 minutes on first boot.
+
+**2. Check plugin installation logs:**
+```bash
+docker exec jenkins cat /var/jenkins_home/logs/tasks/hudson.diagnosis.ReverseProxySetupMonitor.log
+```
+
+**3. Manually install plugins via the UI:**
+- Go to **Manage Jenkins → Manage Plugins**
+- Search and install the required plugins
+
+**4. Check update-center connectivity:**
+```bash
+docker exec jenkins curl -I https://updates.jenkins.io/
+```
+</Accordion>
+
+<Accordion title="Setup wizard appears despite configuration">
+**Symptom:** Jenkins shows the initial setup wizard on first access.
+
+**Solution:** Ensure the `JAVA_OPTS` environment variable is set correctly in `docker-compose.yml`:
+
+```yaml
+environment:
+  - JAVA_OPTS=-Djenkins.install.runSetupWizard=false
+```
+
+Restart Jenkins after making the change:
+```bash
+docker compose restart jenkins
+```
+</Accordion>
+
+<Accordion title="Jenkins can't reach SonarQube or Nexus">
+**Symptoms:** Build fails with "connection refused", or pipelines can't reach `http://sonarqube:9000` / `http://nexus:8081`.
+
+**1. Verify all services share the same Docker network:**
+```bash
+docker network inspect cicd-network
+```
+
+**2. Test connectivity from inside the Jenkins container:**
+```bash
+docker exec jenkins curl -I http://sonarqube:9000
+docker exec jenkins curl -I http://nexus:8081
+```
+
+**3. Wait for dependent services** — SonarQube in particular can take 2–3 minutes to become ready after startup.
+</Accordion>
+
+<Accordion title="Pipeline fails or behaves unexpectedly">
+**1. Inspect recent Jenkins logs:**
+```bash
+docker logs jenkins --tail 200
+```
+
+**2. Replay the pipeline with additional debug output** — in the Jenkins UI, open the build, then click **Replay** and add `env` or `echo` statements to isolate the failure.
+
+**3. Verify pipeline parameters** — confirm that `ENVIRONMENT`, `TARGET_SERVER`, and other parameters match expected values (see the [Pipeline Parameters](/reference/quick-reference#pipeline-parameters) table).
+</Accordion>
+
+---
+
+## SonarQube Issues
+
+<Accordion title="SonarQube won't start">
+**Symptoms:** The `sonarqube` container restarts constantly, logs mention `max_map_count`.
+
+**1. Increase `vm.max_map_count` on the Docker host:**
+```bash
+sudo sysctl -w vm.max_map_count=262144
+
+# Make the setting permanent across reboots
+echo "vm.max_map_count=262144" | sudo tee -a /etc/sysctl.conf
+```
+
+**2. Verify PostgreSQL is running:**
+```bash
+docker compose logs postgres
+```
+
+**3. Increase SonarQube JVM memory in `docker-compose.yml`:**
+```yaml
+sonarqube:
+  environment:
+    - SONAR_CE_JAVAOPTS=-Xmx1024m
+    - SONAR_WEB_JAVAOPTS=-Xmx1024m
+```
+</Accordion>
+
+<Accordion title="Database connection failed">
+**Symptoms:** SonarQube logs show "Could not connect to database" or PostgreSQL errors.
+
+**1. Verify PostgreSQL is healthy:**
+```bash
+docker exec postgres psql -U sonar -d sonarqube -c "SELECT 1;"
+```
+
+**2. Confirm that credentials match in `docker-compose.yml`:**
+```yaml
+postgres:
+  environment:
+    - POSTGRES_USER=sonar
+    - POSTGRES_PASSWORD=sonar
+
+sonarqube:
+  environment:
+    - SONAR_JDBC_USERNAME=sonar
+    - SONAR_JDBC_PASSWORD=sonar
+```
+
+**3. Recreate the database as a last resort:**
+```bash
+docker exec postgres psql -U sonar -c "DROP DATABASE sonarqube;"
+docker exec postgres psql -U sonar -c "CREATE DATABASE sonarqube;"
+docker compose restart sonarqube
+```
+</Accordion>
+
+<Accordion title="Can't log in to SonarQube">
+**Symptom:** Default credentials (`admin` / `admin`) are rejected.
+
+SonarQube requires a password change on first login. Log in with `admin` / `admin` — you will be immediately prompted to set a new password. After changing it, update the `sonarqube-token` credential in Jenkins (**Manage Jenkins → Credentials**).
+</Accordion>
+
+<Accordion title="SonarQube analysis fails">
+**Symptoms:** Maven fails on the `sonar:sonar` goal, or the **Quality Gate** stage fails in Jenkins.
+
+**1. Confirm the token credential exists in Jenkins:**
+```bash
+docker exec jenkins cat /var/jenkins_home/credentials.xml | grep sonarqube-token
+```
+
+**2. Test analysis manually:**
+```bash
+mvn sonar:sonar \
+  -Dsonar.projectKey=test \
+  -Dsonar.host.url=http://localhost:9000 \
+  -Dsonar.login=admin \
+  -Dsonar.password=admin
+```
+
+**3. Check SonarQube server status:**
+```bash
+curl http://localhost:9000/api/system/status
+```
+</Accordion>
+
+---
+
+## Nexus Issues
+
+<Accordion title="Nexus is slow to start">
+**Symptom:** Nexus is not accessible after 5+ minutes.
+
+**1. Check available memory:**
+```bash
+free -h
+docker stats nexus
+```
+
+**2. Reduce Nexus heap if RAM is constrained:**
+```yaml
+nexus:
+  environment:
+    - INSTALL4J_ADD_VM_PARAMS=-Xms256m -Xmx512m -XX:MaxDirectMemorySize=273m
+```
+
+**3. Check Nexus logs for errors:**
+```bash
+docker compose logs nexus | grep -i error
+```
+</Accordion>
+
+<Accordion title="Can't retrieve the Nexus admin password">
+**Symptom:** `docker exec nexus cat /nexus-data/admin.password` returns "no such file".
+
+**1. Wait for full initialization** — Nexus can take 5–10 minutes on first boot.
+
+**2. Check whether the file exists:**
+```bash
+docker exec nexus ls -la /nexus-data/admin.password
+```
+
+**3. If the file is gone, Nexus has already started and the password was consumed.** Check the logs:
+```bash
+docker compose logs nexus | grep -i password
+```
+
+**4. Try the default fallback password:** `admin123`
+</Accordion>
+
+<Accordion title="Maven deploy fails with 401 Unauthorized">
+**Symptoms:** `mvn deploy` fails with HTTP 401, artifacts cannot be uploaded.
+
+**1. Verify credentials in `settings.xml`:**
+```xml
+<server>
+  <id>nexus-snapshots</id>
+  <username>admin</username>
+  <password>correct-password</password>
+</server>
+```
+
+**2. Ensure the server ID in `settings.xml` matches `pom.xml`:**
+```xml
+<!-- pom.xml distributionManagement -->
+<snapshotRepository>
+  <id>nexus-snapshots</id>  <!-- Must match settings.xml -->
+  <url>http://localhost:8081/repository/maven-snapshots/</url>
+</snapshotRepository>
+```
+
+**3. Enable "Allow redeploy" in Nexus:**
+- Log in to Nexus → **Repositories → maven-snapshots**
+- Under **Hosted**, set **Deployment policy** to **Allow redeploy**
+</Accordion>
+
+<Accordion title="Repositories not created">
+**Symptom:** `maven-releases` or `maven-snapshots` repositories don't exist in Nexus.
+
+Manually create them in the Nexus UI:
+1. Log in to **http://localhost:8081**
+2. Click the gear icon → **Repositories → Create repository**
+3. Select **maven2 (hosted)**
+4. Create two repositories:
+   - Name: `maven-releases`, Version policy: **Release**
+   - Name: `maven-snapshots`, Version policy: **Snapshot**
+</Accordion>
+
+---
+
+## WildFly / JBoss Issues
+
+<Accordion title="Application won't deploy">
+**1. Check the deployment directory for `.failed` marker files:**
+```bash
+docker exec wildfly ls -la /opt/jboss/wildfly/standalone/deployments/
+docker exec wildfly cat /opt/jboss/wildfly/standalone/deployments/*.failed
+```
+
+**2. Remove a stale failed marker and retry:**
+```bash
+docker exec wildfly rm /opt/jboss/wildfly/standalone/deployments/myapp.war.failed
+docker cp target/myapp.war wildfly:/opt/jboss/wildfly/standalone/deployments/
+```
+
+**3. Check WildFly startup logs:**
+```bash
+docker logs wildfly --tail 100
+```
+</Accordion>
+
+<Accordion title="Out of memory errors">
+Increase the JVM heap in `docker-compose.yml` for the affected server:
+
+```yaml
+wildfly:
+  environment:
+    - JAVA_OPTS=-Xms2048m -Xmx4096m
+```
+
+Then restart the service:
+```bash
+docker compose restart wildfly
+```
+</Accordion>
+
+<Accordion title="Database connection errors">
+Verify that datasource environment variables are set correctly. WildFly and JBoss both read connection details from environment variables defined in `docker-compose.yml`. Check the running configuration with:
+
+```bash
+docker inspect wildfly | grep -A 20 Env
+```
+
+Ensure the values match the credentials and host/port of your database service.
+</Accordion>
+
+---
+
+## Docker Issues
+
+<Accordion title="No space left on device">
+**1. Free up space by pruning unused Docker resources:**
+```bash
+docker system prune -a --volumes
+```
+
+**2. Check disk usage breakdown:**
+```bash
+docker system df
+df -h
+```
+
+**3. Remove old images only:**
+```bash
+docker image prune -a
+```
+</Accordion>
+
+<Accordion title="Container keeps restarting">
+**1. Check recent container logs:**
+```bash
+docker logs <container-name>
+```
+
+**2. Inspect the container's health check status:**
+```bash
+docker inspect <container-name> | grep -A 20 Health
+```
+
+**3. Temporarily disable the restart policy** to prevent an infinite loop while you diagnose:
+```yaml
+# In docker-compose.yml, comment out:
+# restart: unless-stopped
+```
+</Accordion>
+
+<Accordion title="Network communication fails between containers">
+**1. Verify the `cicd-network` exists:**
+```bash
+docker network ls | grep cicd
+```
+
+**2. Recreate the network:**
+```bash
+docker compose down
+docker network rm cicd-network
+docker compose up -d
+```
+
+**3. Test DNS resolution from inside a container:**
+```bash
+docker exec jenkins ping sonarqube
+docker exec jenkins ping nexus
+```
+</Accordion>
+
+---
+
+## Build Issues
+
+<Accordion title="Java version mismatch">
+**Symptoms:** "class file version" errors or `UnsupportedClassVersionException` at runtime.
+
+**1. Check the Java version in the Jenkins container:**
+```bash
+docker exec jenkins java -version
+```
+
+**2. Set the correct JDK in your `Jenkinsfile`:**
+```groovy
+tools {
+    jdk 'JDK 17'  // Must match an installed JDK configured in Jenkins
+}
+```
+
+**3. Align `pom.xml` compiler settings:**
+```xml
+<properties>
+  <maven.compiler.source>17</maven.compiler.source>
+  <maven.compiler.target>17</maven.compiler.target>
+</properties>
+```
+</Accordion>
+
+<Accordion title="Tests fail during build">
+**1. Skip tests temporarily to isolate the issue:**
+```bash
+mvn clean install -DskipTests
+```
+
+**2. Run tests locally first to reproduce:**
+```bash
+mvn test
+```
+
+**3. Inspect Surefire test reports:**
+```bash
+cat target/surefire-reports/*.txt
+```
+</Accordion>
+
+<Accordion title="Security scan fails the build">
+The pipeline rejects hardcoded credentials. Find the offending line in the scan output, then replace any hardcoded value with an environment variable lookup:
+
+```java
+// Before (fails security scan)
+String password = "myPassword123";
+
+// After (passes security scan)
+String password = System.getenv("DB_PASSWORD");
+```
+
+See [Security Scanning Rules](/reference/quick-reference#security-scanning-rules) for the full list of detected patterns.
+</Accordion>
+
+---
+
+## Debug Mode
+
+Enable verbose logging to get more detail from each service:
+
+```yaml
+# Jenkins — add to JAVA_OPTS
+environment:
+  - JAVA_OPTS=-Djenkins.install.runSetupWizard=false -Djava.util.logging.config.file=/var/jenkins_home/logging.properties
+
+# SonarQube — set log level
+environment:
+  - SONAR_LOG_LEVEL=DEBUG
+```
+
+For Maven, append `-X` to any goal to enable debug output:
+
+```bash
+mvn clean install -X
+```
+
+---
+
+## Complete Reset
+
+If all else fails, perform a full teardown and re-initialise the stack from scratch:
+
+```bash
+docker compose down -v
+docker volume prune -f
+./setup.sh
+```
+
+<Warning>
+  This destroys **all persistent data** including Jenkins job history, SonarQube projects, and Nexus artifacts. Back up first with `./backup-restore.sh backup`.
+</Warning>

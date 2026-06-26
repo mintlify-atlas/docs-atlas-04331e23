@@ -1,0 +1,223 @@
+---
+title: "Configure Builds with build-config.yml"
+sidebarTitle: "Build Config"
+description: "build-config.yml controls Java version, Maven version, build tool, test settings, SonarQube, Nexus, app server targets, security scanning, and versioning for every pipeline run."
+---
+
+`build-config.yml` is the central configuration file read by Jenkins at the start of every pipeline run. It lives in the project root alongside the `Jenkinsfile` and controls all major pipeline behaviors — from which Java and Maven versions to use, to which application server receives deployments and whether security scanning is enabled. Changing a value here takes effect on the next pipeline execution without modifying any Groovy code.
+
+## Complete build-config.yml
+
+The following is the full `build-config.yml` shipped with the project:
+
+```yaml
+---
+# Build Configuration File
+# This file defines the build settings for the project
+
+# Java Configuration
+java_version: 17
+
+# Maven Configuration
+maven_version: 3.9.2
+
+# Build Settings
+build:
+  tool: maven  # Options: maven, mule-maven-plugin
+  clean_install: true
+  skip_tests: false
+  packaging: war  # Options: jar, war, ear
+
+# Test Configuration
+test:
+  enabled: true
+  command: mvn test
+
+# SonarQube Configuration
+sonarqube:
+  enabled: true
+  host_url: http://sonarqube:9000
+  project_key: ${env.JOB_NAME}
+  project_name: ${env.JOB_NAME}
+  security_scan: true  # Enable security vulnerability scanning
+
+# Nexus Configuration
+nexus:
+  enabled: true
+  url: http://nexus:8081
+  repository:
+    releases: maven-releases
+    snapshots: maven-snapshots
+
+# Application Server Configuration
+appserver:
+  type: wildfly  # Options: wildfly, jboss
+  wildfly:
+    url: http://wildfly:9990
+    deployment_dir: /opt/jboss/wildfly/standalone/deployments
+    admin_port: 9990
+    http_port: 8090
+  jboss:
+    url: http://jboss:9990
+    deployment_dir: /opt/jboss/wildfly/standalone/deployments
+    admin_port: 9970
+    http_port: 8070
+
+# Environment Configuration
+environments:
+  - dev
+  - staging
+  - prod
+  default: dev
+
+# Security Configuration
+security:
+  password_scan: true  # Scan for hardcoded passwords
+  mask_credentials: true  # Mask credentials in logs
+  enforce_env_vars: true  # Enforce use of environment variables for secrets
+
+# Versioning Configuration
+versioning:
+  enabled: true
+  format: ${BUILD_NUMBER}-${TIMESTAMP}  # Options: semantic, timestamp, build_number
+  store_properties: true  # Store versioned properties in Nexus
+
+# Additional Maven Goals
+maven:
+  goals:
+    - clean
+    - install
+    - test
+    - sonar:sonar
+    - deploy
+```
+
+## Configuration Reference
+
+### Java and Maven
+
+<ParamField path="java_version" type="integer" required>
+  The JDK version used for compilation and test execution. Corresponds to the `JDK 17` tool installation in Jenkins. Example: `17`
+</ParamField>
+
+<ParamField path="maven_version" type="string" required>
+  The Maven version used for all build goals. Corresponds to the `Maven 3.9.2` tool installation in Jenkins. Example: `3.9.2`
+</ParamField>
+
+### Build Settings
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `build.tool` | string | `maven` runs `mvn clean install`; `mule-maven-plugin` runs `mvn clean package` instead |
+| `build.clean_install` | boolean | When `true`, the pipeline runs a full `clean install` lifecycle |
+| `build.skip_tests` | boolean | When `true`, tests are skipped during the build phase (`-DskipTests`) |
+| `build.packaging` | string | Artifact packaging type: `jar`, `war`, or `ear` |
+
+<ParamField path="build.tool" type="string" default="maven">
+  Controls which Maven command is issued during the Build stage. Set to `maven` for standard Java/Jakarta EE projects, or `mule-maven-plugin` for MuleSoft applications.
+</ParamField>
+
+### Test Configuration
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `test.enabled` | boolean | Master switch; when `false` the Test stage is bypassed entirely |
+| `test.command` | string | Maven command executed by the Test stage, e.g. `mvn test` |
+
+### SonarQube Configuration
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `sonarqube.enabled` | boolean | Enables or disables the SonarQube Analysis and Quality Gate stages |
+| `sonarqube.host_url` | string | Base URL of the SonarQube server, e.g. `http://sonarqube:9000` |
+| `sonarqube.project_key` | string | SonarQube project key; defaults to `${env.JOB_NAME}` |
+| `sonarqube.security_scan` | boolean | Enables SonarQube's built-in security vulnerability rule set |
+
+### Nexus Configuration
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `nexus.enabled` | boolean | Enables or disables artifact deployment to Nexus |
+| `nexus.url` | string | Base URL of the Nexus instance, e.g. `http://nexus:8081` |
+| `nexus.repository.releases` | string | Repository name for release artifacts, e.g. `maven-releases` |
+| `nexus.repository.snapshots` | string | Repository name for snapshot artifacts, e.g. `maven-snapshots` |
+
+### Application Server Configuration
+
+<ParamField path="appserver.type" type="string" default="wildfly">
+  Selects the target application server for deployment. Accepted values are `wildfly` (HTTP port 8090, admin port 9990) and `jboss` (HTTP port 8070, admin port 9970). The enhanced pipeline reads this to pick the correct Docker container name and credentials.
+</ParamField>
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `appserver.wildfly.url` | string | WildFly management URL, e.g. `http://wildfly:9990` |
+| `appserver.wildfly.deployment_dir` | string | Path inside the WildFly container where WARs are dropped |
+| `appserver.wildfly.admin_port` | integer | WildFly management port (`9990`) |
+| `appserver.wildfly.http_port` | integer | WildFly HTTP port (`8090`) |
+| `appserver.jboss.url` | string | JBoss management URL, e.g. `http://jboss:9990` |
+| `appserver.jboss.deployment_dir` | string | Path inside the JBoss container where WARs are dropped |
+| `appserver.jboss.admin_port` | integer | JBoss management port (`9970`) |
+| `appserver.jboss.http_port` | integer | JBoss HTTP port (`8070`) |
+
+### Environments
+
+<ParamField path="environments" type="array">
+  List of named deployment targets. The enhanced pipeline exposes these as a `choice` parameter so operators can select the environment at build time. Default list: `[dev, staging, prod]`.
+</ParamField>
+
+<ParamField path="environments.default" type="string" default="dev">
+  The environment selected automatically when no explicit choice is made. Changing this to `staging` or `prod` raises the quality bar for all ad-hoc builds.
+</ParamField>
+
+### Security Configuration
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `security.password_scan` | boolean | Enables the grep-based hardcoded-secret scan in the Security Scan stage |
+| `security.mask_credentials` | boolean | Instructs Jenkins to mask credential values in build logs |
+| `security.enforce_env_vars` | boolean | Pipeline fails the build if secrets are not sourced from environment variables |
+
+### Versioning Configuration
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `versioning.enabled` | boolean | Enables automatic artifact versioning |
+| `versioning.format` | string | Version string format; default is `${BUILD_NUMBER}-${TIMESTAMP}` |
+| `versioning.store_properties` | boolean | Packages and uploads `version.properties` to Nexus after each build |
+
+### Maven Goals
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `maven.goals` | list | Ordered list of Maven goals executed during the pipeline: `clean`, `install`, `test`, `sonar:sonar`, `deploy` |
+
+## How the Pipeline Reads build-config.yml
+
+Both the basic `Jenkinsfile` and `Jenkinsfile.enhanced` open with the same `Read Build Config` stage. The `readYaml` step parses the file and populates Jenkins environment variables that all subsequent stages can reference:
+
+```groovy
+stage('Read Build Config') {
+    steps {
+        script {
+            echo "Reading build configuration from ${BUILD_CONFIG}"
+            if (fileExists(BUILD_CONFIG)) {
+                def config = readYaml file: BUILD_CONFIG
+                env.JAVA_VERSION = config.java_version ?: '17'
+                env.MAVEN_VERSION = config.maven_version ?: '3.9.2'
+                env.BUILD_TOOL = config.build?.tool ?: 'maven'
+                echo "Java Version: ${env.JAVA_VERSION}"
+                echo "Maven Version: ${env.MAVEN_VERSION}"
+                echo "Build Tool: ${env.BUILD_TOOL}"
+            } else {
+                echo "Warning: ${BUILD_CONFIG} not found. Using defaults."
+            }
+        }
+    }
+}
+```
+
+The `?:` (Elvis) operator provides fallback defaults inline, so even a completely empty workspace proceeds with sensible values.
+
+<Tip>
+  If `build-config.yml` is missing from the workspace, the pipeline falls back gracefully to its compiled-in defaults: **Java 17**, **Maven 3.9.2**, and **build tool: maven**. No manual intervention is required, but a warning is printed to the build log.
+</Tip>

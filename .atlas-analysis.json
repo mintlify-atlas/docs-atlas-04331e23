@@ -1,0 +1,95 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "Jenkins CI/CD Environment",
+  "projectDescription": "A complete, Docker-based CI/CD environment that orchestrates Jenkins, SonarQube, Nexus, WildFly, and JBoss for automated Java application build, test, and deployment pipelines.",
+  "theme": "aspen",
+  "primaryColor": "#bb3a35",
+  "lightColor": "#2d353c",
+  "darkColor": "#d1c2b2",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Setup & Configuration",
+            "pages": [
+              "setup/installation",
+              "setup/configuration",
+              "setup/environment-variables",
+              "setup/docker-compose-override"
+            ]
+          },
+          {
+            "group": "Pipeline Guide",
+            "pages": [
+              "pipeline/build-config",
+              "pipeline/jenkinsfile",
+              "pipeline/jenkinsfile-enhanced",
+              "pipeline/security-scanning"
+            ]
+          },
+          {
+            "group": "Services",
+            "pages": [
+              "services/jenkins",
+              "services/sonarqube",
+              "services/nexus",
+              "services/wildfly-jboss"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/deployment-workflows",
+              "operations/backup-restore",
+              "operations/version-management",
+              "operations/migration-guide"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/quick-reference",
+              "reference/troubleshooting",
+              "reference/contributing"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "One-command setup with setup.sh that provisions all services automatically",
+    "Full CI/CD pipeline: build → test → SonarQube analysis → quality gate → Nexus deploy",
+    "Dual application server support: WildFly (modern) and JBoss EAP (legacy)",
+    "Multi-environment configuration: dev, staging, and production with isolated properties",
+    "Security scanning: hardcoded password detection and credential masking in logs",
+    "ZIP-based source upload for projects without Git integration",
+    "Automatic build versioning with BUILD_NUMBER and timestamp",
+    "Backup and restore for all service configurations and databases",
+    "Jenkins auto-configuration via init.groovy.d scripts (no manual setup wizard)",
+    "JBoss to WildFly migration tooling with parallel deployment support"
+  ],
+  "publicApiSurface": [
+    "./setup.sh — provisions the full stack",
+    "./validate.sh — validates all services and configuration",
+    "./backup-restore.sh backup|restore|list — backup and restore all service data",
+    "./upload-source.sh <zip> <env> <server> — build and deploy from a ZIP archive",
+    "Jenkinsfile — basic 7-stage declarative pipeline",
+    "Jenkinsfile.enhanced — full 13-stage pipeline with environment parameters",
+    "build-config.yml — project build settings (java_version, maven_version, build tool, sonarqube, nexus, appserver, security, versioning)",
+    "docker-compose.yml — full stack service definitions",
+    "docker-compose.override.yml.example — production hardening template",
+    "jenkins/init.groovy.d/ — Jenkins auto-configuration scripts (admin user, plugins, credentials, SonarQube, Maven)",
+    "Pipeline parameters: ENVIRONMENT (dev|staging|prod), TARGET_SERVER (wildfly|jboss), SKIP_TESTS, SKIP_SONAR, FROM_ZIP"
+  ]
+}

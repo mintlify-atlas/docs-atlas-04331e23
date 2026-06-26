@@ -1,0 +1,466 @@
+---
+title: "Jenkinsfile.enhanced: 13-Stage Parameterized Pipeline"
+sidebarTitle: "Enhanced Pipeline"
+description: "Jenkinsfile.enhanced adds environment selection, security scanning, per-environment Maven repos, WildFly/JBoss deployment, artifact versioning, and properties storage to the basic pipeline."
+---
+
+`Jenkinsfile.enhanced` extends the basic 7-stage pipeline into a fully parameterized 13-stage workflow designed for multi-environment Java application delivery. It introduces pipeline parameters that operators set at build time, automatic versioning using a build-number/timestamp composite, grep-based security scanning for hardcoded secrets, per-environment Maven local repositories, deployment to either WildFly or JBoss via `docker cp`, `version.properties` injection into WAR files, versioned properties upload to Nexus, and a post-deployment HTTP verification step.
+
+## Pipeline Parameters
+
+<ParamField path="ENVIRONMENT" type="choice">
+  Target deployment environment. Selects which `config/environments/{env}/application.properties` file is loaded and which Nexus repository receives artifacts. Accepted values: `dev`, `staging`, `prod`.
+</ParamField>
+
+<ParamField path="TARGET_SERVER" type="choice">
+  Target application server container. Controls which Docker container name is used for `docker cp` deployment and which Jenkins credential (`wildfly-credentials` or `jboss-credentials`) is resolved. Accepted values: `wildfly`, `jboss`.
+</ParamField>
+
+<ParamField path="SKIP_TESTS" type="boolean" default="false">
+  When `true`, the Test stage is bypassed entirely via a `when { expression { !params.SKIP_TESTS } }` guard. Useful for hotfix deployments where test results are already known.
+</ParamField>
+
+<ParamField path="SKIP_SONAR" type="boolean" default="false">
+  When `true`, both the SonarQube Analysis and Quality Gate stages are skipped. The Quality Gate stage shares the same `when` condition so neither runs nor blocks the pipeline.
+</ParamField>
+
+<ParamField path="FROM_ZIP" type="boolean" default="false">
+  When `true`, the Checkout or Extract stage unpacks `source-code.zip` from the workspace instead of running `checkout scm`. Enables deployment of applications that are not hosted in a Git repository.
+</ParamField>
+
+## All 13 Stages
+
+<Accordion title="1. Initialize">
+  Prints pipeline metadata and computes a composite application version string that is used throughout all subsequent stages.
+
+  ```groovy
+  stage('Initialize') {
+      steps {
+          script {
+              echo "=== CI/CD Pipeline Started ==="
+              echo "Environment: ${params.ENVIRONMENT}"
+              echo "Target Server: ${params.TARGET_SERVER}"
+              echo "Build Number: ${env.BUILD_NUMBER}"
+
+              // Set version with timestamp
+              def timestamp = new Date().format('yyyyMMdd-HHmmss')
+              env.APP_VERSION = "${env.BUILD_NUMBER}-${timestamp}"
+              echo "Application Version: ${env.APP_VERSION}"
+          }
+      }
+  }
+  ```
+
+  `APP_VERSION` takes the form `{BUILD_NUMBER}-{yyyyMMdd-HHmmss}`, for example `42-20251025-143022`. This value is embedded in WAR files and uploaded to Nexus to make every artifact uniquely traceable.
+</Accordion>
+
+<Accordion title="2. Read Build Config">
+  Reads `build-config.yml` using `readYaml` and sets `JAVA_VERSION`, `MAVEN_VERSION`, and `BUILD_TOOL` environment variables. Identical in behavior to the basic `Jenkinsfile`, with fallback defaults when the file is absent.
+
+  ```groovy
+  stage('Read Build Config') {
+      steps {
+          script {
+              if (fileExists(BUILD_CONFIG)) {
+                  def config = readYaml file: BUILD_CONFIG
+                  env.JAVA_VERSION = config.java_version ?: '17'
+                  env.MAVEN_VERSION = config.maven_version ?: '3.9.2'
+                  env.BUILD_TOOL = config.build?.tool ?: 'maven'
+              } else {
+                  echo "Warning: ${BUILD_CONFIG} not found. Using defaults."
+              }
+          }
+      }
+  }
+  ```
+</Accordion>
+
+<Accordion title="3. Load Environment Properties">
+  Reads the environment-specific `application.properties` file for the selected `ENVIRONMENT`. The file is expected at `config/environments/${ENVIRONMENT}/application.properties`. A warning is printed if the file does not exist; the pipeline continues.
+
+  ```groovy
+  stage('Load Environment Properties') {
+      steps {
+          script {
+              def envPropsFile = "config/environments/${params.ENVIRONMENT}/application.properties"
+              if (fileExists(envPropsFile)) {
+                  echo "Loading properties for environment: ${params.ENVIRONMENT}"
+                  def props = readProperties file: envPropsFile
+                  echo "Environment properties loaded successfully"
+              } else {
+                  echo "Warning: Environment properties file not found: ${envPropsFile}"
+              }
+          }
+      }
+  }
+  ```
+</Accordion>
+
+<Accordion title="4. Checkout or Extract">
+  Branches on the `FROM_ZIP` parameter. When `false`, runs `checkout scm`. When `true`, unzips `source-code.zip` from the current workspace. The ZIP is expected to have been uploaded to the Jenkins workspace before the build is triggered.
+
+  ```groovy
+  stage('Checkout or Extract') {
+      steps {
+          script {
+              if (params.FROM_ZIP) {
+                  sh '''
+                      if [ -f source-code.zip ]; then
+                          unzip -o source-code.zip -d ./
+                          echo "Source code extracted from ZIP"
+                      else
+                          echo "ERROR: source-code.zip not found!"
+                          exit 1
+                      fi
+                  '''
+              } else {
+                  checkout scm
+              }
+          }
+      }
+  }
+  ```
+</Accordion>
+
+<Accordion title="5. Security Scan - Password Detection">
+  Scans all files under `src/` for three categories of hardcoded secrets. A `security-scan.txt` report is written to the workspace root. The stage fails the build (`exit 1`) if any hardcoded password pattern is detected.
+
+  ```groovy
+  stage('Security Scan - Password Detection') {
+      steps {
+          script {
+              sh '''
+                  echo "=== Security Scan Report ===" > security-scan.txt
+                  echo "Timestamp: $(date)" >> security-scan.txt
+
+                  # Scan for common password patterns
+                  grep -r -n -i "password.*=.*['\"]" src/ || echo "No hardcoded passwords found"
+
+                  # Scan for API keys
+                  grep -r -n -i "api[_-]key.*=.*['\"]" src/ || echo "No hardcoded API keys found"
+
+                  # Scan for tokens
+                  grep -r -n -i "token.*=.*['\"]" src/ || echo "No hardcoded tokens found"
+
+                  # Fail build if passwords found
+                  if grep -r -i "password.*=.*['\"][^$]" src/ 2>/dev/null; then
+                      echo "ERROR: Hardcoded passwords detected in source code!"
+                      exit 1
+                  fi
+              '''
+          }
+      }
+  }
+  ```
+
+  See [Security Scanning](/pipeline/security-scanning) for full pattern documentation and remediation guidance.
+</Accordion>
+
+<Accordion title="6. Setup Maven Repository">
+  Creates a per-environment local Maven repository directory at `.m2/repository-${ENVIRONMENT}` inside the workspace. If `config/environments/${ENVIRONMENT}/settings.xml` exists, it is copied to `.m2/settings.xml` so environment-specific Nexus mirrors and server credentials are used for this build only.
+
+  ```groovy
+  stage('Setup Maven Repository') {
+      steps {
+          script {
+              sh '''
+                  mkdir -p .m2/repository-${ENVIRONMENT}
+
+                  if [ -f "config/environments/${ENVIRONMENT}/settings.xml" ]; then
+                      cp config/environments/${ENVIRONMENT}/settings.xml .m2/settings.xml
+                  else
+                      cp examples/settings.xml .m2/settings.xml 2>/dev/null || echo "Using default Maven settings"
+                  fi
+
+                  export MAVEN_OPTS="-Dmaven.repo.local=${WORKSPACE}/.m2/repository-${ENVIRONMENT}"
+              '''
+          }
+      }
+  }
+  ```
+</Accordion>
+
+<Accordion title="7. Build">
+  Builds the application using the `BUILD_TOOL` set in stage 2, passing the per-environment Maven repository, `app.version`, and the selected `ENVIRONMENT` as system properties.
+
+  ```groovy
+  stage('Build') {
+      steps {
+          script {
+              if (env.BUILD_TOOL == 'mule-maven-plugin') {
+                  sh 'mvn clean package -DskipTests -Dmaven.repo.local=${WORKSPACE}/.m2/repository-${ENVIRONMENT}'
+              } else {
+                  sh """
+                      mvn clean install -DskipTests \
+                      -Dmaven.repo.local=\${WORKSPACE}/.m2/repository-\${ENVIRONMENT} \
+                      -Dapp.version=\${APP_VERSION} \
+                      -Denvironment=\${ENVIRONMENT}
+                  """
+              }
+          }
+      }
+  }
+  ```
+</Accordion>
+
+<Accordion title="8. Test">
+  Runs `mvn test` against the environment-specific Maven repository. Skipped entirely when `SKIP_TESTS` is `true`. JUnit results are published with `allowEmptyResults: true` so the stage does not fail if no test reports exist.
+
+  ```groovy
+  stage('Test') {
+      when {
+          expression { !params.SKIP_TESTS }
+      }
+      steps {
+          sh 'mvn test -Dmaven.repo.local=${WORKSPACE}/.m2/repository-${ENVIRONMENT}'
+      }
+      post {
+          always {
+              junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
+          }
+      }
+  }
+  ```
+</Accordion>
+
+<Accordion title="9. SonarQube Analysis">
+  Runs `mvn sonar:sonar` inside a `withSonarQubeEnv('SonarQube')` block. The project key includes the environment name (`${JOB_NAME}-${ENVIRONMENT}`) so each environment's analysis is tracked separately in SonarQube. Skipped when `SKIP_SONAR` is `true`.
+
+  ```groovy
+  stage('SonarQube Analysis') {
+      when {
+          expression { !params.SKIP_SONAR }
+      }
+      steps {
+          script {
+              withSonarQubeEnv('SonarQube') {
+                  sh """
+                      mvn sonar:sonar \
+                      -Dsonar.projectKey=\${JOB_NAME}-\${ENVIRONMENT} \
+                      -Dsonar.projectName=\${JOB_NAME}-\${ENVIRONMENT} \
+                      -Dsonar.projectVersion=\${APP_VERSION} \
+                      -Dsonar.host.url=\${SONARQUBE_URL} \
+                      -Dmaven.repo.local=\${WORKSPACE}/.m2/repository-\${ENVIRONMENT}
+                  """
+              }
+          }
+      }
+  }
+  ```
+</Accordion>
+
+<Accordion title="10. Quality Gate">
+  Waits up to 5 minutes for SonarQube to return its Quality Gate result. If the gate status is not `OK`, the pipeline is aborted immediately (`abortPipeline: true`). Shares the `SKIP_SONAR` guard with the analysis stage — if analysis was skipped, this stage is skipped too.
+
+  ```groovy
+  stage('Quality Gate') {
+      when {
+          expression { !params.SKIP_SONAR }
+      }
+      steps {
+          timeout(time: 5, unit: 'MINUTES') {
+              waitForQualityGate abortPipeline: true
+          }
+      }
+  }
+  ```
+</Accordion>
+
+<Accordion title="11. Version and Tag Artifact">
+  Writes a `version.properties` file containing build metadata and injects it into the WAR file using `jar uf`. This makes provenance information available at runtime from inside the deployed application.
+
+  ```groovy
+  stage('Version and Tag Artifact') {
+      steps {
+          script {
+              sh '''
+                  cat > version.properties << EOF
+  VERSION=${APP_VERSION}
+  ENVIRONMENT=${ENVIRONMENT}
+  BUILD_NUMBER=${BUILD_NUMBER}
+  BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+  GIT_COMMIT=${GIT_COMMIT:-unknown}
+  GIT_BRANCH=${GIT_BRANCH:-unknown}
+  BUILT_BY=Jenkins
+  TARGET_SERVER=${TARGET_SERVER}
+  EOF
+
+                  if [ -f target/*.war ]; then
+                      jar uf target/*.war version.properties
+                      echo "Version properties added to WAR file"
+                  fi
+              '''
+          }
+      }
+  }
+  ```
+
+  The `version.properties` keys written to each artifact:
+
+  | Key | Example value |
+  |-----|---------------|
+  | `VERSION` | `42-20251025-143022` |
+  | `ENVIRONMENT` | `staging` |
+  | `BUILD_NUMBER` | `42` |
+  | `BUILD_DATE` | `2025-10-25T14:30:22Z` |
+  | `GIT_COMMIT` | `abc123def` |
+  | `GIT_BRANCH` | `main` |
+  | `BUILT_BY` | `Jenkins` |
+  | `TARGET_SERVER` | `wildfly` |
+</Accordion>
+
+<Accordion title="12. Deploy to Nexus">
+  Uploads artifacts to the `maven-snapshots` repository using `mvn deploy`. This stage runs on the `main`, `master`, and `develop` branches, or whenever the `ENVIRONMENT` parameter is `dev` or `staging`.
+
+  ```groovy
+  stage('Deploy to Nexus') {
+      when {
+          anyOf {
+              branch 'main'
+              branch 'master'
+              branch 'develop'
+              expression { params.ENVIRONMENT == 'dev' || params.ENVIRONMENT == 'staging' }
+          }
+      }
+      steps {
+          withCredentials([usernamePassword(credentialsId: 'nexus-credentials',
+                                            usernameVariable: 'NEXUS_USER',
+                                            passwordVariable: 'NEXUS_PASS')]) {
+              sh """
+                  mvn deploy -DskipTests \
+                  -Dmaven.repo.local=\${WORKSPACE}/.m2/repository-\${ENVIRONMENT} \
+                  -DaltDeploymentRepository=nexus::default::\${NEXUS_URL}/repository/maven-snapshots
+              """
+          }
+      }
+  }
+  ```
+</Accordion>
+
+<Accordion title="13. Deploy to Application Server">
+  Finds the WAR file in `target/`, then uses `docker cp` to copy it into the deployment directory of the selected application server container (`/opt/jboss/wildfly/standalone/deployments/`). Runs only on `main`, `master`, and `develop` branches.
+
+  ```groovy
+  stage('Deploy to Application Server') {
+      when {
+          anyOf { branch 'main'; branch 'master'; branch 'develop' }
+      }
+      steps {
+          script {
+              def serverName = params.TARGET_SERVER
+              withCredentials([usernamePassword(
+                  credentialsId: "${serverName}-credentials",
+                  usernameVariable: 'SERVER_USER',
+                  passwordVariable: 'SERVER_PASS'
+              )]) {
+                  sh """
+                      WAR_FILE=\$(find target -name "*.war" | head -1)
+                      if [ -z "\$WAR_FILE" ]; then
+                          echo "ERROR: No WAR file found in target directory"
+                          exit 1
+                      fi
+                      echo "Deploying \$WAR_FILE to ${serverName}"
+                      docker cp \$WAR_FILE ${serverName}:/opt/jboss/wildfly/standalone/deployments/
+                      echo "Deployment completed to ${serverName}"
+                  """
+              }
+          }
+      }
+  }
+  ```
+</Accordion>
+
+<Accordion title="14. Store Properties Version">
+  Packages the `config/environments/${ENVIRONMENT}` directory as a tarball named `properties-${ENVIRONMENT}-${APP_VERSION}.tar.gz`, adds a `metadata.json` file, and uploads the archive to Nexus using `curl`. This ensures that the exact configuration used for each build can be retrieved later.
+
+  ```groovy
+  stage('Store Properties Version') {
+      steps {
+          script {
+              sh '''
+                  PROPS_DIR="properties-${APP_VERSION}"
+                  mkdir -p $PROPS_DIR
+                  cp -r config/environments/${ENVIRONMENT}/* $PROPS_DIR/ 2>/dev/null || true
+
+                  cat > $PROPS_DIR/metadata.json << EOF
+  {
+    "version": "${APP_VERSION}",
+    "environment": "${ENVIRONMENT}",
+    "buildNumber": "${BUILD_NUMBER}",
+    "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+    "gitCommit": "${GIT_COMMIT:-unknown}",
+    "gitBranch": "${GIT_BRANCH:-unknown}"
+  }
+  EOF
+
+                  tar czf properties-${ENVIRONMENT}-${APP_VERSION}.tar.gz $PROPS_DIR
+              '''
+
+              withCredentials([usernamePassword(credentialsId: 'nexus-credentials',
+                                                usernameVariable: 'NEXUS_USER',
+                                                passwordVariable: 'NEXUS_PASS')]) {
+                  sh '''
+                      curl -v -u ${NEXUS_USER}:${NEXUS_PASS} \
+                          --upload-file properties-${ENVIRONMENT}-${APP_VERSION}.tar.gz \
+                          ${NEXUS_URL}/repository/maven-snapshots/properties/${JOB_NAME}/${APP_VERSION}/properties-${ENVIRONMENT}-${APP_VERSION}.tar.gz || true
+                  '''
+              }
+          }
+      }
+  }
+  ```
+</Accordion>
+
+<Accordion title="15. Post-Deployment Verification">
+  Waits 10 seconds after deployment to allow WildFly or JBoss to process the WAR file, then issues an HTTP request to the application endpoint to confirm it is accessible. Runs only on `main` and `master` branches. A non-2xx response prints a warning but does not fail the build.
+
+  ```groovy
+  stage('Post-Deployment Verification') {
+      when {
+          anyOf { branch 'main'; branch 'master' }
+      }
+      steps {
+          script {
+              def serverName = params.TARGET_SERVER
+              def serverPort = params.TARGET_SERVER == 'wildfly' ? '8090' : '8070'
+
+              sh """
+                  sleep 10
+                  curl -f http://${serverName}:${serverPort}/ || echo "Warning: Application may not be accessible yet"
+              """
+          }
+      }
+  }
+  ```
+</Accordion>
+
+## Required Jenkins Credentials
+
+Create all three credentials in **Manage Jenkins → Credentials** before running the enhanced pipeline:
+
+| Credentials ID | Type | Used by stage |
+|----------------|------|---------------|
+| `nexus-credentials` | Username with password | Deploy to Nexus, Store Properties Version |
+| `wildfly-credentials` | Username with password | Deploy to Application Server (when `TARGET_SERVER=wildfly`) |
+| `jboss-credentials` | Username with password | Deploy to Application Server (when `TARGET_SERVER=jboss`) |
+
+## Using This Pipeline
+
+<Steps>
+  <Step title="Copy the file to your project">
+    Copy `Jenkinsfile.enhanced` to the root of your application repository and rename it `Jenkinsfile` (or keep the original name and set the Script Path accordingly).
+  </Step>
+  <Step title="Configure a parameterized pipeline job">
+    In Jenkins, create a new **Pipeline** item. Under **Pipeline Definition** select **Pipeline script from SCM**, point it to your repository, and set **Script Path** to `Jenkinsfile` (or `Jenkinsfile.enhanced` if you kept the original name).
+  </Step>
+  <Step title="Verify credentials exist">
+    Confirm that `nexus-credentials`, `wildfly-credentials`, and `jboss-credentials` are present in the Jenkins credential store before the first run.
+  </Step>
+  <Step title="Run with Build with Parameters">
+    Click **Build with Parameters** on the job page. Select your target `ENVIRONMENT` and `TARGET_SERVER`, adjust the boolean flags as needed, and click **Build**.
+  </Step>
+</Steps>
+
+<Warning>
+  `Jenkinsfile.enhanced` begins with `@Library('shared-library') _`. If you do not have a shared library named `shared-library` configured in Jenkins (**Manage Jenkins → Configure System → Global Pipeline Libraries**), remove this line before using the file — otherwise the pipeline will fail at startup with a library resolution error.
+</Warning>

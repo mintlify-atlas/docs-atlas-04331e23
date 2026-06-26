@@ -1,0 +1,169 @@
+---
+title: "Install and Provision the CI/CD Stack on Linux"
+sidebarTitle: "Installation"
+description: "Step-by-step guide to clone, provision, and validate the Jenkins CI/CD stack on Ubuntu or compatible Linux using Docker Compose and the setup.sh script."
+---
+
+This page walks you through everything required to get the Jenkins CI/CD stack running locally from scratch — from meeting system requirements and cloning the repository, to running the automated setup script and verifying all five services are healthy. By the end you will have Jenkins, SonarQube, Nexus, WildFly, and JBoss all running in Docker containers on a shared internal network, ready for pipeline use.
+
+## Prerequisites
+
+Before running the setup script, confirm your environment meets the following requirements:
+
+- **Operating System**: Ubuntu Linux or a compatible distribution
+- **Docker**: version 20.10 or later (`docker --version`)
+- **Docker Compose**: version 1.29 or later (`docker compose version` or `docker-compose --version`)
+- **RAM**: at least 6 GB of available system memory (all five services run concurrently)
+- **Disk space**: at least 15 GB free (Docker images, volumes, and build artifacts)
+
+<Warning>
+  SonarQube requires the Linux kernel parameter `vm.max_map_count` to be at
+  least `262144`. Without this, the SonarQube container will exit immediately
+  with an Elasticsearch bootstrap error. Set it before running the stack:
+
+  ```bash
+  sudo sysctl -w vm.max_map_count=262144
+  ```
+
+  To make the change permanent across reboots, add the following line to
+  `/etc/sysctl.conf`:
+
+  ```properties
+  vm.max_map_count=262144
+  ```
+</Warning>
+
+## Installation
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the CICD repository and change into the project directory:
+
+    ```bash
+    git clone https://github.com/infra-neo/CICD.git && cd CICD
+    ```
+  </Step>
+
+  <Step title="Run the automated setup script">
+    Execute `setup.sh` to provision all services:
+
+    ```bash
+    ./setup.sh
+    ```
+
+    The script performs the following actions in order:
+
+    1. **Checks dependencies** — verifies that `docker` and `docker compose` (or `docker-compose`) are installed and exits with an error if either is missing.
+    2. **Stops existing containers** — runs `docker compose down -v` to remove any previously running containers and their volumes, ensuring a clean slate.
+    3. **Starts all services** — runs `docker compose up -d` to pull images (if not already cached) and start Jenkins, PostgreSQL, SonarQube, Nexus, WildFly, and JBoss in detached mode.
+    4. **Polls service health** — loops every 5 seconds with `curl` checks against each service's HTTP port until Jenkins (`:8080`), SonarQube (`:9000`), Nexus (`:8081`), WildFly (`:8090`), and JBoss (`:8070`) all respond.
+    5. **Configures application server admin users** — runs `add-user.sh admin admin --silent` inside both the `wildfly` and `jboss` containers to register the management console admin account.
+    6. **Waits 30 seconds** — pauses for full initialization of plugins, database migrations, and other background bootstrap tasks before printing the summary.
+
+    <Note>
+      The first run may take 5–10 minutes depending on internet speed and host
+      resources, as Docker must pull all service images.
+    </Note>
+  </Step>
+
+  <Step title="Validate the environment">
+    After setup completes, run the validation script to confirm every component is healthy:
+
+    ```bash
+    ./validate.sh
+    ```
+
+    The script executes approximately 20 automated checks across seven categories:
+
+    | Category | What is checked |
+    |---|---|
+    | Container status | Jenkins, SonarQube, Nexus, PostgreSQL containers are running |
+    | Network connectivity | Jenkins container can reach SonarQube and Nexus by hostname |
+    | HTTP endpoints | All services respond to `curl` on their published ports |
+    | Service health | Jenkins version, PostgreSQL connection, SonarQube API status (`UP`) |
+    | Docker volumes | `cicd_jenkins_home`, `cicd_nexus_data`, `cicd_sonarqube_data` exist |
+    | Configuration files | `jenkins/init.groovy.d/` scripts, `docker-compose.yml`, `build-config.yml`, `Jenkinsfile` are present and valid |
+    | Example project | Maven example project builds successfully (skipped if Maven is not installed locally) |
+
+    A green `✓ PASS` line is printed for each successful check. The script exits with code `1` if any check fails and prints remediation hints.
+  </Step>
+
+  <Step title="Retrieve the Nexus admin password">
+    Nexus generates a random admin password on first start. Retrieve it with:
+
+    ```bash
+    docker exec nexus cat /nexus-data/admin.password
+    ```
+
+    Copy the printed value and use it to log in at `http://localhost:8081`. You will be prompted to set a new password on your first sign-in.
+  </Step>
+</Steps>
+
+## Service URLs
+
+Once setup completes successfully, all five services are accessible from the host:
+
+| Service | URL | Username | Password |
+|---|---|---|---|
+| Jenkins | [http://localhost:8080](http://localhost:8080) | `admin` | `admin` |
+| SonarQube | [http://localhost:9000](http://localhost:9000) | `admin` | `admin` |
+| Nexus | [http://localhost:8081](http://localhost:8081) | `admin` | *(generated — see step 4)* |
+| WildFly (HTTP) | [http://localhost:8090](http://localhost:8090) | `admin` | `admin` |
+| WildFly (Admin) | [http://localhost:9990](http://localhost:9990) | `admin` | `admin` |
+| JBoss (HTTP) | [http://localhost:8070](http://localhost:8070) | `admin` | `admin` |
+| JBoss (Admin) | [http://localhost:9970](http://localhost:9970) | `admin` | `admin` |
+
+<Warning>
+  The default credentials above are suitable for local development only. Always
+  change admin passwords before exposing any service to a shared network or the
+  internet. See [Configuration](/setup/configuration) for instructions on
+  updating credentials.
+</Warning>
+
+## Common Operations
+
+The following commands cover the most frequent day-to-day operations for managing the stack.
+
+**Start all services**
+
+```bash
+docker compose up -d
+```
+
+**Stop all services** (containers are removed; volumes are preserved)
+
+```bash
+docker compose down
+```
+
+**View logs**
+
+```bash
+# Stream logs from all services
+docker compose logs -f
+
+# Stream logs from a single service
+docker compose logs -f jenkins
+docker compose logs -f sonarqube
+docker compose logs -f nexus
+docker compose logs -f wildfly
+docker compose logs -f jboss
+```
+
+**Restart a single service**
+
+```bash
+docker compose restart jenkins
+```
+
+**Full reset** (destroys all volumes and re-provisions from scratch)
+
+```bash
+docker compose down -v && ./setup.sh
+```
+
+<Tip>
+  If any service fails to start or the validation script reports failures, see
+  the [Troubleshooting](/reference/troubleshooting) reference for diagnosis
+  steps and common fixes.
+</Tip>

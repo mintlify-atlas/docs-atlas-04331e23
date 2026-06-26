@@ -1,0 +1,200 @@
+---
+title: "Quick Reference: Commands, URLs, Ports, and Parameters"
+sidebarTitle: "Quick Reference"
+description: "Cheat sheet for all service URLs, ports, credentials, Docker Compose commands, Maven goals, pipeline parameters, deployment commands, and security scanning rules."
+---
+
+This page is a concise cheat sheet for daily operations with the CI/CD stack. Bookmark it for quick access to service URLs, credentials, Docker Compose commands, Maven goals, and pipeline parameters without needing to dig through longer guides.
+
+## Service URLs and Credentials
+
+All services are available on `localhost` after running `./setup.sh`. The Nexus admin password is generated on first startup — retrieve it with `docker exec nexus cat /nexus-data/admin.password`.
+
+| Service | URL | Username | Password |
+|---------|-----|----------|----------|
+| Jenkins | http://localhost:8080 | `admin` | `admin` |
+| SonarQube | http://localhost:9000 | `admin` | `admin` |
+| Nexus | http://localhost:8081 | `admin` | `[generated]` |
+| WildFly HTTP | http://localhost:8090 | `admin` | `admin` |
+| WildFly Admin | http://localhost:9990 | `admin` | `admin` |
+| JBoss HTTP | http://localhost:8070 | `admin` | `admin` |
+| JBoss Admin | http://localhost:9970 | `admin` | `admin` |
+
+<Note>
+  SonarQube requires a password change on first login. After changing it, update the `sonarqube-token` credential in Jenkins accordingly.
+</Note>
+
+## Port Reference
+
+| Port | Service | Purpose |
+|------|---------|---------|
+| `8080` | Jenkins | Web UI |
+| `50000` | Jenkins | Agent communication |
+| `9000` | SonarQube | Web UI |
+| `8081` | Nexus | Web UI |
+| `8090` | WildFly | HTTP |
+| `9990` | WildFly | Admin Console |
+| `8070` | JBoss | HTTP |
+| `9970` | JBoss | Admin Console |
+| `5432` | PostgreSQL | Database (internal only) |
+
+<Tip>
+  If a port is already in use on your host, change the left-hand side of the mapping in `docker-compose.yml` (e.g. `"8090:8080"` → `"8091:8080"`) and restart the stack.
+</Tip>
+
+## Common Docker Compose Commands
+
+```bash
+# Start all services
+docker compose up -d
+
+# Stop all services
+docker compose down
+
+# Stop and remove volumes (destroys data)
+docker compose down -v
+
+# Restart all services
+docker compose restart
+
+# Restart specific service
+docker compose restart wildfly
+
+# View all logs
+docker compose logs -f
+
+# View specific service logs
+docker compose logs -f jenkins
+
+# Get Nexus admin password
+docker exec nexus cat /nexus-data/admin.password
+
+# Access container shell
+docker exec -it wildfly /bin/bash
+```
+
+## Building and Deploying
+
+```bash
+# Navigate to the example project
+cd examples/webapp-sample
+
+# Build with tests
+mvn clean install
+
+# Build, skip tests
+mvn clean package -DskipTests
+
+# Build and run SonarQube analysis
+mvn clean verify sonar:sonar
+
+# Deploy WAR to WildFly
+docker cp target/*.war wildfly:/opt/jboss/wildfly/standalone/deployments/
+
+# Deploy WAR to JBoss
+docker cp target/*.war jboss:/opt/jboss/wildfly/standalone/deployments/
+
+# Deploy using Maven plugin
+mvn wildfly:deploy
+
+# Deploy from ZIP source archive
+./upload-source.sh myapp.zip dev wildfly
+```
+
+## Pipeline Parameters
+
+When creating or triggering Jenkins jobs, use these parameters:
+
+| Parameter | Values | Description |
+|-----------|--------|-------------|
+| `ENVIRONMENT` | `dev`, `staging`, `prod` | Target deployment environment |
+| `TARGET_SERVER` | `wildfly`, `jboss` | Application server to deploy to |
+| `SKIP_TESTS` | `true`, `false` | Skip test execution during build |
+| `SKIP_SONAR` | `true`, `false` | Skip SonarQube static analysis |
+| `FROM_ZIP` | `true`, `false` | Build from a ZIP source archive |
+
+## Maven Goals Reference
+
+| Goal | Description |
+|------|-------------|
+| `clean` | Delete the `target/` build directory |
+| `compile` | Compile all Java source files |
+| `test` | Compile and run unit tests |
+| `package` | Package compiled code into a WAR or JAR |
+| `install` | Install the artifact to the local Maven repository |
+| `deploy` | Upload the artifact to Nexus |
+| `sonar:sonar` | Run SonarQube static analysis |
+| `clean install` | Clean then build and install |
+| `clean package -DskipTests` | Build quickly without running tests |
+| `clean verify sonar:sonar` | Full build, verify, and analyze with SonarQube |
+
+## Security Scanning Rules
+
+The pipeline scans source code for hardcoded secrets. The following patterns **will fail** a build:
+
+```java
+// These patterns cause build failure:
+String password = "myPassword123";
+String apiKey   = "sk_live_abc123";
+String token    = "ghp_xyz123abc";
+```
+
+Replace them with environment variable lookups:
+
+```java
+// Correct — read credentials from environment:
+String password = System.getenv("DB_PASSWORD");
+String apiKey   = System.getenv("API_KEY");
+String token    = System.getenv("AUTH_TOKEN");
+```
+
+For properties files, use the placeholder syntax:
+
+```properties
+db.password=${DB_PASSWORD_DEV}
+api.key=${API_KEY_PROD}
+app.version=${APP_VERSION}
+```
+
+## Checking Service Health
+
+```bash
+curl -s http://localhost:8080/login | grep -q 'Jenkins' && echo '✓ Jenkins OK'
+curl -s http://localhost:9000/api/system/status
+curl -s http://localhost:8090 | grep -q 'WildFly' && echo '✓ WildFly OK'
+docker ps             # list all running containers
+docker stats --no-stream  # resource usage snapshot
+```
+
+## Backup and Restore Commands
+
+```bash
+# Create a timestamped backup
+./backup-restore.sh backup
+
+# List all available backups
+./backup-restore.sh list
+
+# Restore a specific backup (use timestamp from list)
+./backup-restore.sh restore 20251025_143022
+```
+
+<Warning>
+  Always run `./backup-restore.sh backup` before performing upgrades, configuration changes, or any destructive operation on the stack.
+</Warning>
+
+## Version Check Commands
+
+```bash
+# Maven version
+mvn -version
+
+# Docker version
+docker --version
+
+# Docker Compose version
+docker compose version
+
+# Java version inside a container
+docker exec wildfly java -version
+```

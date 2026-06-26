@@ -1,72 +1,87 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "Jenkins CI/CD Environment",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#bb3a35",
+    "light": "#2d353c",
+    "dark": "#d1c2b2"
   },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
+  "favicon": "https://media.brand.dev/cf03ea09-4306-4c4c-94ed-9c1fa31854af.png",
   "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "light": "https://media.brand.dev/7c355f27-a5b2-4539-91db-74b216b4684d.png",
+    "dark": "https://media.brand.dev/7c355f27-a5b2-4539-91db-74b216b4684d.png"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/infra-neo/CICD"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/infra-neo/CICD"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Setup & Configuration",
+            "pages": [
+              "setup/installation",
+              "setup/configuration",
+              "setup/environment-variables",
+              "setup/docker-compose-override"
+            ]
+          },
+          {
+            "group": "Pipeline Guide",
+            "pages": [
+              "pipeline/build-config",
+              "pipeline/jenkinsfile",
+              "pipeline/jenkinsfile-enhanced",
+              "pipeline/security-scanning"
+            ]
+          },
+          {
+            "group": "Services",
+            "pages": [
+              "services/jenkins",
+              "services/sonarqube",
+              "services/nexus",
+              "services/wildfly-jboss"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/deployment-workflows",
+              "operations/backup-restore",
+              "operations/version-management",
+              "operations/migration-guide"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/quick-reference",
+              "reference/troubleshooting",
+              "reference/contributing"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }
